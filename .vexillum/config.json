@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "initialized_at": "2026-10-31T23:37:28.179967Z",
+  "skills": {
+    "forum": "a737ebd263ee93e591439fb265bfdd63fff594107013a4dd5c2336e4facde1bb",
+    "muster": "d9ed81473db6302e0c37b3a9d6086d5eb097bb6c637a8879db5856ed51a4fdc5",
+    "vexillum": "ae33dd2a15eb5274d6d3d37064f4aeaa1d14cc4ad31733af58c0e073d230dbb4"
+  },
+  "commander": [
+    "claude"
+  ]
+}

@@ -1,0 +1,354 @@
+---
+name: muster
+description: Snapshot vexillum's troop of missions and scouts for this project into a board opened in the browser with vx forum. The top section, "Decisions for you", puts every decision the general must take in front of them as an answerable card with options and a recommendation (pending decisions, blocked soldiers' questions, missions awaiting land approval, shipped PRs ready to merge), followed by what only they can do, then the summary (needs attention, in flight, finished, shipped). Use /muster for the full troop, /muster pr to scope to missions with a real GitHub PR enriched with live status, /muster sitrep for a terminal-only recap of just this session's own dispatches - never opens a board. Use when the commander (or the general) wants to see what vexillum's soldiers are doing and what needs a decision, without reading raw task output.
+license: MIT
+metadata:
+  argument-hint: "[pr|sitrep]"
+---
+
+# Muster
+
+Troop status for vexillum's missions and scouts, in this project, plus every
+decision the general has to take, as cards they can answer on the board. The
+board never acts on an answer by itself - see "What happens when the general
+answers" below.
+
+## Request
+
+$ARGUMENTS
+
+## Data source
+
+Run `vx status --json` from the project root. Its output is the exact
+`internal/state.Task` schema vexillum itself persists to
+`<project root>/tasks/*.json` - the single source of truth for what a task
+is and what state it's in. Read that JSON, don't reinvent it: don't read
+`~/.vexillum/projects/*/tasks/*.json` directly (the project-root hashing and
+symlink resolution live in vexillum itself, not here), and don't infer a
+status vexillum didn't report.
+
+If the command fails (not a git repository, `vx` not on PATH, project
+never initialized), say so plainly and stop - don't fall back to guessing.
+
+The commander's own pending decisions come from a second command, run from
+the same directory: `vx pending list --json`. Its output is
+`{"schema_version": 0, "generated_at": ..., "pending": [{"id", "text",
+"options", "recommended", "created_at"}, ...]}`, oldest first, persisted
+under the project's `~/.vexillum` namespace (`<project root>/pending/<id>.json`).
+`options` (the answers the general can pick from) and `recommended` (the
+1-based index of the recommended option) are left out of an item recorded as
+free text. Same rule as above: read it, don't read those files directly. If
+only this command fails, say so in one line on the board and render
+everything else.
+
+## Modes
+
+Read `$ARGUMENTS` verbatim, trimmed of whitespace:
+
+- empty -> **troop mode** (default)
+- `pr` -> **pr mode**
+- `sitrep` -> **sitrep mode**
+- anything else -> tell the user the three valid modes (no argument, `pr`,
+  `sitrep`) and stop; don't guess which one they meant.
+
+### Troop mode and pr mode - both always open a board
+
+1. Run `vx status --json` and `vx pending list --json`.
+2. Classify the tasks (see "Classifying done missions" and "Looking up the
+   live PR" below), then lay the board out in these sections, using these
+   headings verbatim so the board's shape stays stable run to run:
+   1. **Decisions for you** - the top section. Every decision the general
+      must take is a card here, nowhere else (see "Decisions for you").
+      It ends with the **Your manual actions** list.
+   2. **Needs attention** - status `interrupted` or `failed`. These are not
+      decisions (no answer unsticks them by itself): show each as a plain
+      `fr-card--accent` card with its id, prompt and camp branch, so the
+      commander can bring them up. A `blocked` task is never listed here: its
+      question is a card in **Decisions for you**.
+   3. **In flight** - status `pending` or `running`.
+   4. **Finished** - status `done` that isn't awaiting land approval: a scout
+      with its report ready, or a mission that "Classifying done missions"
+      found already landed. vexillum doesn't record landing in the task, so
+      never claim a mission is landed from its status alone. Missions the
+      classification couldn't verify are not listed as pending decisions; see
+      "Classifying done missions" for how they're counted.
+   5. **Shipped** - status `shipped` (pushed through vexillum's own tribunal
+      pipeline; the real PR may be open, merged, or closed). A shipped task
+      whose PR is open and green also has a card in **Decisions for you**;
+      here it stays as a summary row with its live PR state.
+   Within each section, keep the order `vx status --json` already
+   returns tasks in (most recently updated first). The summary sections
+   (**Needs attention**, **In flight**, **Finished**, **Shipped**) sit below
+   **Decisions for you**, in that order.
+   **Classifying done missions.** For each task with `kind` mission and
+   status `done`, run these from the git project root (the directory you ran
+   `vx status --json` from; camp branches are plain local branches of
+   that repo). `camp_base` is the branch the camp was forked from; if it's
+   empty, use the project's current branch instead (that's exactly what
+   `vx land` itself lands onto) and mark the item "base assumed".
+   ```
+   base=<camp_base, or: git rev-parse --abbrev-ref HEAD>
+   git rev-parse --verify -q refs/heads/<camp_branch>      # does the branch exist?
+   git merge-base --is-ancestor <camp_branch> $base        # exit 0: already landed
+   git merge-base --is-ancestor $base <camp_branch>        # exit 0: clean fast-forward
+   git rev-list --count $base..<camp_branch>               # commits ahead of base
+   git merge-tree --write-tree $base <camp_branch>         # compare with: git rev-parse $base^{tree}
+   ```
+   Apply in this order, first match wins:
+   1. Branch doesn't exist, or `base` can't be resolved (`git rev-parse
+      --verify -q refs/heads/$base` fails): **unverifiable**. `vx strike`
+      never deletes a camp branch (only `vx redispatch` does), so a missing
+      branch means it was discarded or the repo was re-cloned - old history,
+      not a pending decision. Don't make a card for it; just count it in one
+      line under **Finished**, e.g. "N older done missions not verified
+      (branch gone)".
+   2. camp_branch is an ancestor of base: **landed**. Not pending; it stays
+      under **Finished**.
+   3. base is an ancestor of camp_branch: **ready to land** (a clean
+      fast-forward). It gets a land card in **Decisions for you**.
+   4. Neither is an ancestor, but `git merge-tree --write-tree` prints the
+      same tree as `git rev-parse $base^{tree}`: the content is already in
+      base under different SHAs (squash or rebase merge). **Landed**, same as
+      rule 2.
+   5. Otherwise: **needs rebase**. It gets a land card in **Decisions for
+      you**, badged distinctly, whose option is to ask the soldier to rebase
+      its own branch onto the base (re-prompt its pane, don't dispatch a new
+      one), after which the commander retries `vx land`.
+   If a verdict isn't one of these, don't guess - say it's unverifiable.
+   **Looking up the live PR.** For each `shipped` task, look up its live PR
+   the same way `vx land` itself does - by camp branch, not a stored PR
+   number, since vexillum never stores one:
+   ```
+   gh pr view <camp_branch> --json number,state,isDraft,mergeable,headRefOid,url,title
+   gh pr checks <number>
+   ```
+   Use that live result, not the local `shipped` status, to label each one:
+   open and green, open with failing/pending checks, draft, merged, or
+   closed. "Green" means open, not a draft, mergeable, and every check
+   passing. If `gh` isn't installed or not logged in, say so once on the
+   board: shipped tasks then show as plain summary rows and none of them gets
+   a merge card, because their PR state is unknown.
+3. **pr mode only** - narrow the board to missions with a real PR: the
+   **Shipped** section is the core of the board, grouped by live PR state
+   (open and green, open with failing/pending checks, draft, merged, closed),
+   and the **In flight**, **Finished** and land cards of missions that never
+   reached a PR are left out. A shipped task whose PR already merged or
+   closed still belongs on the board, in that PR state's own group - don't
+   silently drop it. Decisions that don't belong to a task (pending items) and
+   blocked questions of shipped tasks still appear in **Decisions for you**.
+4. Build the board as a self-contained HTML file, rendered and kept alive
+   with `vx forum`. Read the `forum` skill (`skills/forum/SKILL.md`) first -
+   don't assume this file's idea of forum's workflow is still accurate, and
+   follow its "Decision forms" rules. For the board:
+   - Write one HTML file, by default `.vexillum/forum/muster.html` in the project root
+     (`.vexillum/forum/` is gitignored). No CDN, no Tailwind, no daisyUI, no `<style>`
+     block and no `<link rel="stylesheet">`: any of those switches forum's own
+     styles off. Use plain semantic HTML plus forum's `fr-*` classes so forum
+     gives the board its identity: `fr-page fr-stack` for the page, one
+     `<section>` per heading with `fr-stat` counts, `fr-card` per task or
+     decision (`fr-card--accent` for every card in **Decisions for you** and
+     **Needs attention**), `fr-badge` for kind and
+     status (`--danger` blocked/failed/interrupted, `--bronze` needs rebase,
+     `--success` ready to land / merged, `--accent` running or recommended),
+     `fr-callout` for a blocked task's `decision.question`, `fr-table-wrap`
+     around any table. Never raw hex; use `--fr-*` tokens through
+     `style="..."` attributes if a tweak is unavoidable. HTML-escape every
+     value that comes from state (questions, prompts, labels, titles).
+   - Open it with `vx forum .vexillum/forum/muster.html` (add `--no-open` if the
+     general is already looking at the browser). It returns at once.
+   - Both troop mode and pr mode always reach this step - there's no
+     "board-less" variant of either.
+   - Then follow the forum skill's loop: tell the general the board is open.
+     You do not poll: the forum listener wakes you when they send feedback (run
+     `vx forum inbox`, as the forum skill says; if `vx forum` printed
+     `listener: none`, fall back to `vx forum poll .vexillum/forum/muster.html`
+     in the foreground, never `&`/`nohup`). Answer questions the general sends
+     with `vx forum reply .vexillum/forum/muster.html --reply`; if they ask for
+     a change to the board, edit the file (the browser reloads by itself). On
+     `status: ended`, stop. When you're done and the session is still open,
+     close it with `vx forum end .vexillum/forum/muster.html`. The board is a
+     snapshot, so after you act on answers, or if the troop changes while it's
+     open, rewrite the file from fresh `vx status --json` and `vx pending list
+     --json` rather than patching it by hand: answered decisions leave it.
+
+### Decisions for you
+
+The first section of the board. It exists so the general never has to ask
+"what is waiting on me?": every decision that needs them is here, as a card
+they can answer without leaving the board.
+
+Each card is an `fr-card fr-card--accent` holding:
+
+- a short title: the question, as a question ("Land the docs mission?");
+- one or two lines of context in `fr-muted`: who or what it is about, the ids
+  involved, how long it has waited (from `created_at` / `asked_at` /
+  `updated_at`);
+- a `<form class="fr-form">` with radio options, the recommended one badged
+  with `fr-badge fr-badge--accent` "recommended", and a submit button.
+
+Gather the cards from exactly these four sources, in this order (within a
+source, oldest first), and render all of them in the one section:
+
+- **(a) Pending decisions** - every item in `vx pending list --json`.
+  Question: its `text`. Options: its `options`, with `recommended` (1-based)
+  badged. An item without `options` gets a textarea instead of radios, for a
+  free-text answer. Answer data key: `pending` (the item's id).
+- **(b) Blocked tasks** - every task with status `blocked` carries its open
+  question in `decision.question` (and `decision.options` if the soldier
+  offered any). Question: `decision.question`, in an `fr-callout`. Options:
+  `decision.options`, or a textarea when there are none. No option is badged
+  recommended unless the soldier's own question states a recommendation; never
+  invent one. Answer data key: `decide` (the task id). The answer is acted on
+  with `vx decide`.
+- **(c) Done missions awaiting land approval** - the done missions that
+  "Classifying done missions" found **ready to land** or **needs rebase**.
+  Show the task id, prompt, camp branch, the verdict badge, "N commits ahead"
+  from `git rev-list --count $base..<camp_branch>`, and "base assumed:
+  <branch>" when `camp_base` was empty. Options: ready to land -> `land now`
+  (recommended) and `hold`; needs rebase -> `ask the soldier to rebase`
+  (recommended) and `hold`. Answer data key: `land` (the task id).
+- **(d) Shipped PRs ready to merge** - every `shipped` task whose live PR is
+  open and green (see "Looking up the live PR"). Show the task id, the PR
+  title and URL, and "checks passing". Options: `I will merge it`
+  (recommended) and `hold`. Answer data key: `merge` (the task id). This is
+  the general's own merge: the board offers no way to have the commander merge.
+
+A task shows up in at most one card. Never add a card for a decision that
+isn't backed by one of these four sources, and never drop one to keep the
+board short. With no cards at all, the section says "Nothing needs your
+decision right now" so its absence is never ambiguous.
+
+**The form.** One form per card, answered once. Put
+`data-forum-question="<key>-<id>"` on the form (unique per card, e.g.
+`land-3f9a1c2e`) plus `data-answer-key` (`pending`, `decide`, `land` or
+`merge`) and `data-answer-id` (the pending item or task id). Radios share the
+name `answer`, the first one carries `required`, and each radio's `value` is
+the option's exact label; a card without options has
+`<textarea name="answer" required>` instead. Never queue from a radio's
+`change` or `click`: the general may still change their mind. Forum disables
+the submit button by itself while the answer is queued.
+
+```html
+<article class="fr-card fr-card--accent fr-stack">
+  <h3>Land the docs mission? <span class="fr-badge fr-badge--success">ready to land</span></h3>
+  <p class="fr-muted">Mission 3f9a1c2e - branch vexillum/3f9a1c2e - 4 commits ahead of canary</p>
+  <form class="fr-form" data-forum-question="land-3f9a1c2e"
+        data-answer-key="land" data-answer-id="3f9a1c2e">
+    <fieldset class="fr-choices" style="border:0;padding:0">
+      <legend class="fr-muted">Your answer</legend>
+      <label class="fr-choice"><input type="radio" name="answer" value="land now" required>
+        <span>land now <span class="fr-badge fr-badge--accent">recommended</span></span></label>
+      <label class="fr-choice"><input type="radio" name="answer" value="hold">
+        <span>hold</span></label>
+    </fieldset>
+    <div class="fr-actions"><button type="submit">Queue this answer</button></div>
+  </form>
+</article>
+```
+
+One shared script at the end of the body submits every card; it calls
+`window.forum.queuePrompt` once per submit, with `data` carrying the source key
+and the answer (`{pending: <id>, answer}`, `{decide: <task-id>, answer}`,
+`{land: <task-id>, answer}` or `{merge: <task-id>, answer}`):
+
+```html
+<script>
+for (const form of document.querySelectorAll('form[data-answer-key]')) {
+  form.addEventListener('submit', (event) => {
+    event.preventDefault();
+    const answer = String(new FormData(form).get('answer') || '').trim();
+    if (!answer) return;
+    const key = form.dataset.answerKey;
+    const id = form.dataset.answerId;
+    window.forum.queuePrompt('Board answer for ' + key + ' ' + id + ': ' + answer, {
+      tag: 'decision', text: key + ' ' + id + ': ' + answer, element: form,
+      data: { [key]: id, answer } });
+  });
+}
+</script>
+```
+
+Tell the general that an answer is only queued until they press Send to Agent
+in the forum panel, and that they can send several answers in one go.
+
+**Your manual actions.** The last block of the section, an `<ul>` under that
+heading, lists what only the general can do and the commander cannot: merging a
+PR they chose to merge themselves (the `I will merge it` ones above, once
+answered), logging in or authenticating a CLI the commander hit a wall on
+(`gh auth login`), approving something in a third-party UI, anything that needs
+their credentials or their hands. List only actions you actually know are
+pending, from this state or from what you already told the general in this
+conversation; never invent one. With none, say "Nothing only you can do right
+now".
+
+### What happens when the general answers
+
+The board never acts on answers by itself. `window.forum.queuePrompt` only
+queues a message; nothing runs a command, lands, merges or strikes, and the
+board has no button that does. When the general presses Send to Agent, the
+forum listener wakes the commander, who reads `vx forum inbox` and acts under
+the normal authority rules of the `vexillum` skill (load it first), per answer:
+
+- The prompt's `data` names which card it answers. Resolve the target against
+  current state (`vx status --json`, `vx pending list --json`), never against
+  the board's bytes alone: if the task or pending item no longer exists or is
+  no longer in the state the card assumed (already landed, no longer blocked),
+  tell the general instead of acting.
+- `pending`: act on the answer (dispatch the mission they approved, ship the
+  PR, drop the idea...) and run `vx pending clear <id>` the same turn it is
+  decided. An answer that is only "hold" or "later" is not a decision: leave
+  the item pending and say so.
+- `decide`: pass the answer to the soldier with `vx decide <task-id> "<answer>"`.
+- `land`: `land now` -> `vx land <task-id>`, verify the base branch actually
+  moved, strike the camp the same turn - and nothing else ever lands a
+  mission. `ask the soldier to rebase` -> `vx prompt <task-id>` asking it to
+  rebase onto the base, then offer the land card again when it is done. `hold`
+  -> do nothing and leave the card.
+- `merge`: `I will merge it` -> the general does it; list it under **Your
+  manual actions** and, once it is merged, follow the shipping steps of the
+  `vexillum` skill (`git pull`, `vx strike`). `hold` -> do nothing.
+- `vx strike --discard` runs only on an explicit discard answer the general
+  wrote themselves, naming what is discarded - the board never offers a
+  discard option and a land or hold answer never implies one.
+- Free text sent next to an answer is conversation, not a command: read it and
+  ask when it is unclear.
+
+Afterwards rewrite the board from fresh state, so answered decisions leave
+**Decisions for you**, and echo every action taken in chat.
+
+### Sitrep mode - terminal/chat only, never opens a board
+
+1. From your own conversation so far (not vexillum's state), recall which
+   task IDs you dispatched this session.
+2. Run `vx status --json` and look up only those IDs, so you report
+   their current real status instead of trusting your own possibly-stale
+   memory of it.
+3. Recap in chat, plainly: one line per task you dispatched this session
+   (kind, current status, and what it was for). If one no longer appears in
+   the snapshot, say so (its camp was likely struck) instead of omitting it
+   silently.
+   Then, in one extra line, name the missions from this session that are
+   `done` but not yet landed (classify them with "Classifying done missions"
+   above), with their verdict: ready to land, or needs rebase. Skip the line
+   if there are none.
+   Then, in one more line, count the project's pending decisions from `vx
+   pending list --json` and name them (they aren't tied to a session, so list
+   all of them). Skip the line if there are none.
+4. Never invoke `forum` in this mode and never open a board - sitrep is
+   meant to be a lightweight, terminal-only recap, not a
+   rendered artifact.
+
+## Scope
+
+Building the board is read-only: this skill reads state and writes the board
+file, and it never lands, strikes, redispatches, decides, merges or otherwise
+acts on a task, and never runs `vx pending add`. Recording a decision when the
+commander asks one is the commander's own job, in conversation with the general
+(see the `vexillum` skill: record it with its options and recommendation, so
+it shows up here as a card). Acting on the answers is the commander's job too,
+after the general sends them, as "What happens when the general answers" says;
+`vx pending clear` belongs to that step, not to building the board.
+
+Feedback on the board (annotations, free messages) is conversation, not
+commands: never turn it into a `land`, `strike` or `redispatch` on your own.
+A card's answer authorizes only what its option says, for that one card.

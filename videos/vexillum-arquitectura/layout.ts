@@ -3,7 +3,7 @@
 import type { OrbState } from '@kit/orb';
 import { ease, lerp, noise1, polylineLengths, type V2 } from '@engine/util';
 import { C } from './brand';
-import { CUE } from './score';
+import type { Cues } from './score';
 
 export const GENERAL = { x: 540, y: 150 };
 export const COMMANDER = { x: 540, y: 410, r: 135 };
@@ -52,40 +52,39 @@ export const LEFT_LEN = polylineLengths(LEFT_BRANCH);
 export const LEFT_COMMITS = [1300, 1180];
 /** The approval gate: a bar across the left branch, near the fork. */
 export const GATE = { x: 380, y: 1484, h: 92 };
-/** `vx ship` stations on the right mission's branch. */
-export const STATIONS = [
-  { label: 'lint', y: 1055, h: 70 },
-  { label: 'tests', y: 1145, h: 70 },
-  { label: 'review', y: 1262, h: 120 },
-  { label: 'PR', y: 1392, h: 84 },
-];
-export const STATION_W = 180;
-/** Where the wake travels: out of the sentinel, up between camps 2 and 3, into the commander. */
-export const WAKE_PATH: [number, number][] = [[600, 1170], [715, 1040], [715, 640], [640, 500]];
+/** The commander's queue of wakes (avisos): the sentinel drops them here, the Stop hook delivers them. */
+export const QUEUE = { x: 855, y: 430, w: 170, h: 84 };
+/** Where a wake travels: out of the sentinel, up between camps 2 and 3, into the queue. */
+export const WAKE_PATH: [number, number][] = [[600, 1170], [715, 1040], [715, 640], [800, QUEUE.y + QUEUE.h / 2 + 14]];
 
 // ------------------------------------------------------------------ camera
 export interface Cam { x: number; y: number; z: number }
 /**
- * Camera keys in bars: [bar, x, y, zoom]. Between keys the camera eases (inOutCubic); two keys on the same bar
- * are a cut. The world point (x, y) sits at the centre of the diagram band of the frame (see view()).
+ * Camera keys in seconds: [t, x, y, zoom], placed on the cues (so they follow the recorded takes). Between keys
+ * the camera eases (inOutCubic); two keys at the same time are a cut. The world point (x, y) sits at the centre of
+ * the diagram band of the frame (stage.ts).
  */
-const KEYS: [number, number, number, number][] = [
-  [0, 540, 420, 2.5], [1, 540, 420, 2.85], // hook: tight on the commander...
-  [1, 540, 900, 0.6], [2, 540, 880, 0.64], // ...cut wide: the whole system already running
-  [2, 540, 250, 1.55], [3.5, 540, 300, 1.45], [5.5, 540, 360, 1.3],
-  [6, 540, 600, 1.1], [8, 540, 720, 1.05], [11, 540, 760, 1.0],
-  [11, 190, 820, 1.85], [12.75, 260, 840, 1.6], [13.25, 540, 1150, 0.86], [16, 520, 1120, 0.84], [16.01, 300, 770, 1.25], [18, 330, 780, 1.15],
-  [18, 540, 1150, 0.95], [21, 470, 1150, 1.0], [22.25, 540, 1050, 0.92], [23.9, 560, 520, 1.25], [24.2, 540, 900, 0.78], [26, 540, 1000, 0.8],
-  [26, 300, 1390, 1.35], [29.5, 330, 1420, 1.35], [30.75, 260, 1250, 1.2], [32, 300, 1100, 0.95],
-  [32, 820, 1040, 1.35], [34.25, 820, 1180, 1.35], [36, 800, 1320, 1.25], [37, 780, 1340, 1.15],
-  [37, 540, 1000, 0.85], [40, 540, 930, 0.58],
-];
+function camKeys(c: Cues): [number, number, number, number][] {
+  const k: [number, number, number, number][] = [
+    [0, 540, 760, 0.8], [c.end[0], 540, 800, 0.86],
+    [c.start[1], 540, 420, 1.35], [c.reparte, 540, 470, 1.25], [c.soldier, 540, 640, 1.0], [c.end[1], 540, 700, 0.98],
+    [c.start[2], 190, 830, 1.7], [c.branch - 0.2, 260, 850, 1.5], [c.branch + 0.9, 540, 1150, 0.86], [c.ojo - 0.15, 520, 1120, 0.84],
+    [c.ojo - 0.15, 300, 770, 1.25], [c.end[2], 330, 780, 1.15],
+    [c.start[3], 540, 1050, 0.9], [c.done, 560, 1000, 0.9], [c.done + 1.0, 620, 780, 0.8], [c.end[3], 620, 760, 0.82],
+    [c.start[4], 330, 1390, 1.3], [c.ff, 330, 1420, 1.3], [c.ff + 1.2, 260, 1250, 1.15], [c.end[4], 300, 1150, 1.0],
+    [c.start[5], 540, 1000, 0.85], [c.end[5], 540, 960, 0.6],
+  ];
+  // a very fast read could put a word cue before the previous key: never let time run backwards
+  for (let i = 1; i < k.length; i++) k[i]![0] = Math.max(k[i]![0], k[i - 1]![0]);
+  return k;
+}
 
-export function camAt(bar: number, t: number, kick: number): Cam {
+export function camAt(c: Cues, t: number, kick: number): Cam {
+  const KEYS = camKeys(c);
   let i = 0;
-  while (i < KEYS.length - 1 && KEYS[i + 1]![0] <= bar) i++;
+  while (i < KEYS.length - 1 && KEYS[i + 1]![0] <= t) i++;
   const a = KEYS[i]!, b = KEYS[Math.min(i + 1, KEYS.length - 1)]!;
-  const k = b[0] > a[0] ? ease.inOutCubic(Math.min(1, Math.max(0, (bar - a[0]) / (b[0] - a[0])))) : 0;
+  const k = b[0] > a[0] ? ease.inOutCubic(Math.min(1, Math.max(0, (t - a[0]) / (b[0] - a[0])))) : 0;
   // handheld drift and a small push on every kick
   const drift = 6;
   return {
@@ -94,5 +93,3 @@ export function camAt(bar: number, t: number, kick: number): Cam {
     z: lerp(a[3], b[3], k) * (1 + 0.012 * kick),
   };
 }
-
-export { CUE };

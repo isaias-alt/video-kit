@@ -4,10 +4,10 @@
 import { paintLayer } from '@kit/brush';
 import { mulberry32 } from '@engine/util';
 import { C } from './brand';
-import type { SectionId } from './score';
+
 import {
-  CAMPS, CAMP_H, CAMP_W, COMMANDER, GATE, GENERAL, LEFT_BRANCH, MAIN_X, MAIN_Y, RIGHT_BRANCH, SENTINEL, STATIONS, STATION_W,
-  WAKE_PATH, campBottom, campTop,
+  CAMPS, CAMP_H, CAMP_W, COMMANDER, GATE, GENERAL, LEFT_BRANCH, MAIN_X, MAIN_Y, QUEUE, RIGHT_BRANCH, SENTINEL, WAKE_PATH,
+  campBottom, campTop,
 } from './layout';
 
 /** A painted image placed in world units. */
@@ -51,7 +51,7 @@ function washRect(b: Brush, at: (x: number, y: number) => Pt, x: number, y: numb
 export interface WorldSprites {
   general: Sprite; talk: Sprite; halo: Sprite; dispatch: Sprite[]; camps: Sprite[];
   main: Sprite; branchL: Sprite; branchR: Sprite; sentinel: Sprite; wake: Sprite;
-  gatePosts: Sprite; gateBar: Sprite; stations: Sprite[]; report: Sprite; host: Sprite;
+  gatePosts: Sprite; gateBar: Sprite; queue: Sprite; host: Sprite;
 }
 
 let world: Promise<WorldSprites> | null = null;
@@ -131,20 +131,12 @@ export function worldSprites(): Promise<WorldSprites> {
       b.rect(...at(g.x - 8, top), 16 * SS, g.h * SS);
       b.noHatch();
     });
-    const stations = await Promise.all(STATIONS.map((s, i) => {
-      const x = CAMPS[2]!.x - STATION_W / 2, y = s.y - s.h / 2;
-      const wash = s.label === 'review' ? C.vermWash : s.label === 'PR' ? C.mossWash : C.lapisWash;
-      return sprite(160 + i, x - 20, y - 20, STATION_W + 40, s.h + 40, (b, at) => washRect(b, at, x, y, STATION_W, s.h, wash, s.label === 'review' ? 60 : 45));
-    }));
-    const rx = CAMPS[1]!.x - 80, ry = campBottom + 62;
-    const report = await sprite(170, rx - 50, ry - 56, 100, 112, (b, at) => {
-      b.noStroke(); b.fillTexture(0.3, 0.3); b.fill(C.ochreWash, 90);
-      b.polygon(([[rx - 28, ry - 36], [rx + 16, ry - 36], [rx + 28, ry - 24], [rx + 28, ry + 36], [rx - 28, ry + 36]] as Pt[]).map(([px, py]) => at(px, py)));
-      b.noFill();
-      b.set('pen', C.ink, 0.9);
-      b.polygon(([[rx - 28, ry - 36], [rx + 16, ry - 36], [rx + 28, ry - 24], [rx + 28, ry + 36], [rx - 28, ry + 36]] as Pt[]).map(([px, py]) => at(px, py)));
-      b.set('HB', C.ink, 0.8);
-      for (let k = 0; k < 4; k++) b.line(...at(rx - 18, ry - 14 + k * 13), ...at(rx + (k === 3 ? 4 : 18), ry - 14 + k * 13));
+    const q = QUEUE;
+    const queue = await sprite(160, q.x - q.w / 2 - 20, q.y - q.h / 2 - 20, q.w + 40, q.h + 40, (b, at) => {
+      washRect(b, at, q.x - q.w / 2, q.y - q.h / 2, q.w, q.h, C.vermWash, 40);
+      b.set('pen', C.ink, 0.7);
+      for (let k = 1; k < 3; k++) b.line(...at(q.x - q.w / 2 + (k * q.w) / 3, q.y - q.h / 2 + 34), ...at(q.x - q.w / 2 + (k * q.w) / 3, q.y + q.h / 2 - 6));
+      b.line(...at(q.x - q.w / 2 + 6, q.y - q.h / 2 + 34), ...at(q.x + q.w / 2 - 6, q.y - q.h / 2 + 34));
     });
     const hx = 92, hy = campTop - 118;
     const host = await sprite(171, hx - 60, hy - 50, 120, 100, (b, at) => {
@@ -155,7 +147,7 @@ export function worldSprites(): Promise<WorldSprites> {
       b.set('pen', C.vermilion, 1);
       b.polygon(folder.map(([px, py]) => at(px, py)));
     });
-    return { general, talk, halo, dispatch, camps, main, branchL, branchR, sentinel, wake, gatePosts, gateBar, stations, report, host };
+    return { general, talk, halo, dispatch, camps, main, branchL, branchR, sentinel, wake, gatePosts, gateBar, queue, host };
   })();
   return world;
 }
@@ -174,28 +166,24 @@ export function paperLayer(W: number, H: number) {
 }
 
 // One vector field per section: the backdrop's pencil strokes follow it.
-const FIELD: Record<SectionId, string> = {
-  hook: 'spiral', commander: 'curved', soldiers: 'zigzag', camps: 'columns', sentinel: 'waves', land: 'seabed', ship: 'columns', outro: 'hand',
-};
-const TINT: Record<SectionId, string> = {
-  hook: C.lapisWash, commander: C.lapisWash, soldiers: C.lapisWash, camps: C.ochreWash, sentinel: C.vermWash, land: C.ochreWash, ship: C.mossWash, outro: C.lapisWash,
-};
+// one per take (toma-01 .. toma-06)
+const FIELD = ['spiral', 'curved', 'columns', 'waves', 'seabed', 'hand'];
+const TINT = [C.lapisWash, C.lapisWash, C.ochreWash, C.vermWash, C.ochreWash, C.mossWash];
 export const BOIL = 3;
-const sectionMemo = new Map<SectionId, Promise<HTMLCanvasElement[]>>();
+const sectionMemo = new Map<number, Promise<HTMLCanvasElement[]>>();
 /**
- * A section's backdrop, BOIL variants of one composition: same strokes, same field, different brush grain
+ * A take's backdrop, BOIL variants of one composition: same strokes, same field, different brush grain
  * (only the random seed changes). The plate cycles them on the eighth notes, so the paper "boils" in tempo.
  */
-export function sectionLayers(id: SectionId, W: number, H: number) {
-  let m = sectionMemo.get(id);
+export function sectionLayers(k: number, W: number, H: number) {
+  let m = sectionMemo.get(k);
   if (!m) {
-    const k = Object.keys(FIELD).indexOf(id);
     m = Promise.all(Array.from({ length: BOIL }, (_, v) => paintLayer(W, H, { random: 1000 + k * 10 + v, noise: 500 + k }, (p, b) => {
       const r = mulberry32(77 + k); // the composition: identical in every variant
       b.noStroke(); b.fillBleed(0.3); b.fillTexture(0.65, 0.35);
-      b.fill(TINT[id], 48);
+      b.fill(TINT[k]!, 48);
       b.circle((r() < 0.5 ? 0.12 : 0.88) * W, (0.15 + r() * 0.7) * H, (0.22 + r() * 0.12) * W * 1.4, 0.8);
-      b.field(FIELD[id]);
+      b.field(FIELD[k]!);
       for (let i = 0; i < 64; i++) {
         const x = (r() * 1.2 - 0.1) * W, y = (r() * 1.1 - 0.05) * H, len = (0.25 + r() * 0.55) * W;
         b.set(i % 3 === 0 ? '2B' : 'HB', C.graphite, 0.8 + r() * 0.8);
@@ -203,7 +191,7 @@ export function sectionLayers(id: SectionId, W: number, H: number) {
       }
       b.noField();
     }, { scale: 2 })));
-    sectionMemo.set(id, m);
+    sectionMemo.set(k, m);
   }
   return m;
 }

@@ -9,7 +9,8 @@ import mono700 from '@fontsource/jetbrains-mono/files/jetbrains-mono-latin-700-n
 export const C = {
   paper: '#EFE8DA', // background
   card: '#F7F2E7', // caption cards
-  ink: '#1C1E22', // text, outlines
+  ink: '#1C1E22', // text, outlines, terminal panes
+  night: '#121316', // behind the terminal panes of the hook
   muted: '#6B675F',
   graphite: '#8A857A', // backdrop pencil
   lapis: '#2F5DA8', // commander, missions, primary accent

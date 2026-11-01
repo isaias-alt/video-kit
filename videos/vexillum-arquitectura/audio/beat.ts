@@ -1,19 +1,58 @@
 #!/usr/bin/env bun
-// The beat, synthesized from code (no samples, no third-party audio: nothing to license). It reads the same score
-// as the picture (../score.ts), so every cut, impact and tick lands exactly where the video expects it.
-// Deterministic: a seeded PRNG drives all noise, so the same score gives the same WAV byte for byte.
+// The soundtrack, built from code: a synthesized beat (no samples, no third-party audio: nothing to license) under
+// the general's voice takes. It reads the same score as the picture (../score.ts).
+// - Voice: drop toma-01.wav ... toma-06.wav into ../voz/. Each take lasts exactly as long as its WAV (any rate,
+//   bit depth or channel count; mixed to mono). A missing take uses the middle of the script's range, silent.
+// - Beat: 160 BPM, half-time feel; its bar restarts at every take, so each cut lands on a downbeat with an impact.
+//   It ducks under the voice.
+// Deterministic: a seeded PRNG drives all noise, so the same inputs give the same WAV byte for byte.
 //   bun videos/vexillum-arquitectura/audio/beat.ts            (scripts/vk.mjs runs it: `vk audio` and `vk render`)
-// Writes out/<video>/beat.wav (48 kHz, 16-bit stereo) and data/audio.json (beat grid, onsets and a loudness
-// envelope the plates read as f.beat, f.bar and f.a.kick / f.a.snare / f.a.hat / f.a.rms).
-import { mkdirSync, writeFileSync } from 'node:fs';
+// Writes out/<video>/soundtrack.wav (48 kHz, 16-bit stereo) and data/audio.json: the takes as "sections" (the timeline
+// reads its cuts from there), the beat grid and onsets (f.beat, f.a.kick ...) and a loudness envelope.
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
-import { BAR, BARS, BEAT, BPM, CUE, DURATION, HITS, SECTIONS, TICKS, type SectionId } from '../score';
+import { BAR, BEAT, BPM, TAKES, cues, duration, estimate, hits, setTakes, take, ticks } from '../score';
 
 const VIDEO = path.basename(path.resolve(import.meta.dir, '..'));
 const ROOT = path.resolve(import.meta.dir, '../../..');
+const VOICE_DIR = path.resolve(import.meta.dir, '../voz');
 const SR = 48000;
-const N = Math.round(DURATION * SR);
 const S16 = BEAT / 4; // a sixteenth
+
+/** A WAV file as mono float samples at SR (PCM 16/24/32-bit or float32; linear resampling if needed). */
+function readWav(file: string): Float32Array {
+  const b = readFileSync(file);
+  if (b.toString('ascii', 0, 4) !== 'RIFF' || b.toString('ascii', 8, 12) !== 'WAVE') throw new Error(`${file}: not a WAV`);
+  let fmt = 0, ch = 0, rate = 0, bits = 0, data: Buffer | null = null;
+  for (let o = 12; o + 8 <= b.length;) {
+    const id = b.toString('ascii', o, o + 4), size = b.readUInt32LE(o + 4);
+    if (id === 'fmt ') { fmt = b.readUInt16LE(o + 8); ch = b.readUInt16LE(o + 10); rate = b.readUInt32LE(o + 12); bits = b.readUInt16LE(o + 22); if (fmt === 0xfffe) fmt = b.readUInt16LE(o + 32); }
+    if (id === 'data') data = b.subarray(o + 8, o + 8 + size);
+    o += 8 + size + (size & 1);
+  }
+  if (!data || !ch) throw new Error(`${file}: no fmt/data chunk`);
+  const bps = bits / 8, frames = Math.floor(data.length / (bps * ch)), mono = new Float32Array(frames);
+  const at = (k: number) => {
+    if (fmt === 3) return bits === 64 ? data!.readDoubleLE(k) : data!.readFloatLE(k);
+    if (bits === 16) return data!.readInt16LE(k) / 32768;
+    if (bits === 24) return data!.readIntLE(k, 3) / 8388608;
+    if (bits === 32) return data!.readInt32LE(k) / 2147483648;
+    if (bits === 8) return (data!.readUInt8(k) - 128) / 128;
+    throw new Error(`${file}: ${bits}-bit PCM not supported`);
+  };
+  for (let f = 0; f < frames; f++) { let v = 0; for (let c = 0; c < ch; c++) v += at((f * ch + c) * bps); mono[f] = v / ch; }
+  if (rate === SR) return mono;
+  const out = new Float32Array(Math.round((frames * SR) / rate));
+  for (let i = 0; i < out.length; i++) { const x = (i * rate) / SR, k = Math.floor(x), u = x - k; out[i] = (mono[k] ?? 0) * (1 - u) + (mono[k + 1] ?? 0) * u; }
+  return out;
+}
+
+// the takes: real recordings where they exist
+const voices = TAKES.map((t) => { const f = path.join(VOICE_DIR, `${t.id}.wav`); return existsSync(f) ? readWav(f) : null; });
+setTakes(TAKES.map((t, i) => (voices[i] ? voices[i]!.length / SR : estimate(t))));
+const DURATION = duration();
+const N = Math.round(DURATION * SR);
+const C = cues();
 
 // ---------------------------------------------------------------- tools
 function mulberry32(a: number) {
@@ -27,7 +66,6 @@ function mulberry32(a: number) {
 const rnd = mulberry32(0x5e17);
 const noise = () => rnd() * 2 - 1;
 const mtof = (m: number) => 440 * Math.pow(2, (m - 69) / 12);
-const sec = (bar: number) => bar * BAR;
 
 class Bus {
   L = new Float32Array(N);
@@ -48,19 +86,21 @@ function blep(t: number, dt: number) {
 }
 
 // ---------------------------------------------------------------- arrangement
-const section = (bar: number): SectionId => (SECTIONS.find((s) => bar >= s.from && bar < s.to) ?? SECTIONS[SECTIONS.length - 1]!).id;
-const has = (bar: number, part: 'kick' | 'snare' | 'hat8' | 'hat16' | 'bass' | 'arp' | 'tick') => {
-  const s = section(bar);
-  const groove = !(s === 'sentinel' && bar < CUE.awake) && s !== 'outro';
+type Part = 'kick' | 'snare' | 'hat8' | 'hat16' | 'bass' | 'arp' | 'tick';
+/** What plays in take i at absolute time t. */
+function has(i: number, t: number, part: Part) {
+  const id = TAKES[i]!.id;
+  // toma-04 (the sentinel) is the breakdown: ticks and pings until the commander wakes; toma-06 lets go
+  const breakdown = id === 'toma-04' && t < C.awake;
+  const groove = !breakdown && id !== 'toma-06' && !(id === 'toma-01' && t < C.hookEnd - BAR);
   switch (part) {
-    case 'kick': case 'snare': return groove;
-    case 'hat8': return groove;
-    case 'hat16': return s === 'hook' || s === 'soldiers' || s === 'camps' || s === 'ship' || (s === 'land' && bar >= CUE.ff[0]);
-    case 'bass': return s !== 'outro' && !(s === 'sentinel' && bar < 20);
-    case 'arp': return s === 'soldiers' || s === 'camps' || s === 'ship' || (s === 'land' && bar >= CUE.ff[0]) || s === 'hook';
-    case 'tick': return s === 'sentinel' && bar < CUE.awake;
+    case 'kick': case 'snare': case 'hat8': return groove;
+    case 'hat16': return groove && (id === 'toma-01' || id === 'toma-03' || (id === 'toma-05' && t >= C.ff));
+    case 'bass': return id !== 'toma-06';
+    case 'arp': return groove && (id === 'toma-01' || id === 'toma-03' || (id === 'toma-02' && t >= C.soldier) || (id === 'toma-05' && t >= C.ff));
+    case 'tick': return breakdown;
   }
-};
+}
 
 // D minor, two bars per chord: Dm | Bb | Gm | A (the A major leans back to Dm: tense, never settles)
 const CHORDS = [
@@ -173,61 +213,70 @@ function riser(t0: number, t1: number, amp = 1) {
 }
 
 // ---------------------------------------------------------------- the song
-for (let bar = 0; bar < BARS; bar++) {
-  for (let i = 0; i < 16; i++) {
-    const t = sec(bar) + i * S16, b = bar + i / 16;
-    if (has(b, 'kick') && (i === 0 || i === 10 || (i === 7 && bar % 2 === 1))) kick(t, i === 0 ? 1 : 0.8);
-    if (has(b, 'snare') && i === 8) snare(t);
-    if (has(b, 'snare') && i === 15 && bar % 4 === 3) snare(t, 0.35);
-    const h16 = has(b, 'hat16') && has(b, 'hat8');
-    if (h16 || (has(b, 'hat8') && i % 2 === 0)) hat(t, i % 4 === 2 ? 1 : i % 2 === 0 ? 0.6 : 0.35, h16 && i === 14);
-    if (has(b, 'tick')) tickClick(t, i % 4 === 0 ? 1 : 0.45);
-    if (has(b, 'tick') && i === 0) kick(t, 0.4); // a muffled heartbeat keeps the pulse under the breakdown
-    // bass: driving eighths on the root, an octave jump on the off-beat of beat 4
-    if (has(b, 'bass') && i % 2 === 0) {
-      const c = chordAt(bar), oct = i === 14 ? 12 : 0;
-      const quiet = section(b) === 'sentinel' && b < CUE.awake;
-      pluck(bass, t, c.root + 12 + oct, S16 * 1.7, quiet ? 0.18 : 0.32, { cut: 180, env: quiet ? 400 : 1400, dec: 0.07, sub: 0.6 });
-    }
-    // arp: chord tones in sixteenths, two octaves up, alternating sides
-    if (has(b, 'arp')) {
-      const c = chordAt(bar), seq = [0, 2, 1, 3, 2, 0, 3, 1];
-      const m = c.notes[seq[i % 8]!]! + 12 + (i >= 12 ? 12 : 0);
-      pluck(lead, t, m, S16 * 0.9, 0.07, { cut: 900, env: 4200, dec: 0.05, pan: i % 2 ? 0.55 : -0.55 });
-    }
-  }
-}
-
-// pad: detuned saws per chord region, slow attack, low-passed
-for (let bar = 0; bar < BARS; bar += 2) {
-  const c = chordAt(bar), t0 = sec(bar), len = 2 * BAR;
-  const s = section(bar), dark = s === 'sentinel' || s === 'commander';
-  const i0 = Math.round(t0 * SR), n = Math.round(len * SR);
-  for (const m of c.notes) {
-    for (const det of [-0.08, 0, 0.07]) {
-      const f = mtof(m + det), dt = f / SR, pan = det * 8;
-      let ph = rnd(), l1 = 0, l2 = 0;
-      const cut = (dark ? 700 : 1500) / SR * 2 * Math.PI;
-      for (let k = 0; k < n; k++) {
-        ph += dt; if (ph >= 1) ph -= 1;
-        const v = 2 * ph - 1 - blep(ph, dt);
-        l1 += cut * (v - l1); l2 += cut * (l1 - l2);
-        const tau = k / SR, env = Math.min(1, tau / 0.25) * Math.min(1, (len - tau) / 0.12);
-        pad.add(i0 + k, l2 * env * 0.03, pan);
+// Every take starts its own bar 0 (and its own chord cycle): the grid serves the cut, not the other way round.
+const beatTimes: number[] = [], downbeats: number[] = [];
+TAKES.forEach((_, ti) => {
+  const { start, end } = take(ti), bars = Math.ceil((end - start) / BAR);
+  for (let bar = 0; bar < bars; bar++) {
+    for (let i = 0; i < 16; i++) {
+      const t = start + bar * BAR + i * S16;
+      if (t >= end) break;
+      if (i % 4 === 0) beatTimes.push(t);
+      if (i === 0) downbeats.push(t);
+      if (has(ti, t, 'kick') && (i === 0 || i === 10 || (i === 7 && bar % 2 === 1))) kick(t, i === 0 ? 1 : 0.8);
+      if (has(ti, t, 'snare') && i === 8) snare(t);
+      if (has(ti, t, 'snare') && i === 15 && bar % 4 === 3) snare(t, 0.35);
+      const h16 = has(ti, t, 'hat16');
+      if (h16 || (has(ti, t, 'hat8') && i % 2 === 0)) hat(t, i % 4 === 2 ? 1 : i % 2 === 0 ? 0.6 : 0.35, h16 && i === 14);
+      if (has(ti, t, 'tick')) tickClick(t, i % 4 === 0 ? 1 : 0.45);
+      if (has(ti, t, 'tick') && i === 0) { kick(t, 0.4); ping(t, 81, 0.12, 0.6); } // heartbeat + sonar: one poll per bar
+      // bass: driving eighths on the root, an octave jump on the off-beat of beat 4
+      if (has(ti, t, 'bass') && i % 2 === 0) {
+        const c = chordAt(bar), oct = i === 14 ? 12 : 0, quiet = has(ti, t, 'tick');
+        pluck(bass, t, c.root + 12 + oct, S16 * 1.7, quiet ? 0.18 : 0.32, { cut: 180, env: quiet ? 400 : 1400, dec: 0.07, sub: 0.6 });
+      }
+      // arp: chord tones in sixteenths, two octaves up, alternating sides
+      if (has(ti, t, 'arp')) {
+        const c = chordAt(bar), seq = [0, 2, 1, 3, 2, 0, 3, 1];
+        const m = c.notes[seq[i % 8]!]! + 12 + (i >= 12 ? 12 : 0);
+        pluck(lead, t, m, S16 * 0.9, 0.07, { cut: 900, env: 4200, dec: 0.05, pan: i % 2 ? 0.55 : -0.55 });
       }
     }
   }
-}
+});
+
+// pad: detuned saws per two-bar chord region of each take, slow attack, low-passed
+TAKES.forEach((tk, ti) => {
+  const { start, end } = take(ti), dark = tk.id === 'toma-04' || tk.id === 'toma-02';
+  for (let bar = 0; start + bar * BAR < end; bar += 2) {
+    const c = chordAt(bar), t0 = start + bar * BAR, len = Math.min(2 * BAR, end - t0);
+    const i0 = Math.round(t0 * SR), n = Math.round(len * SR);
+    for (const m of c.notes) {
+      for (const det of [-0.08, 0, 0.07]) {
+        const f = mtof(m + det), dt = f / SR, pan = det * 8;
+        let ph = rnd(), l1 = 0, l2 = 0;
+        const cut = (dark ? 700 : 1500) / SR * 2 * Math.PI;
+        for (let k = 0; k < n; k++) {
+          ph += dt; if (ph >= 1) ph -= 1;
+          const v = 2 * ph - 1 - blep(ph, dt);
+          l1 += cut * (v - l1); l2 += cut * (l1 - l2);
+          const tau = k / SR, env = Math.min(1, tau / 0.25) * Math.min(1, (len - tau) / 0.12);
+          pad.add(i0 + k, l2 * env * 0.03, pan);
+        }
+      }
+    }
+  }
+});
 
 // story events
-for (const b of HITS) impact(sec(b), b === 0 ? 1.1 : 0.85);
-for (const b of TICKS) ping(sec(b), chordAt(b).notes[3]! + 24, 0.13, (b * 7) % 2 - 1);
-for (let b = CUE.scanFrom; b < CUE.awake; b++) ping(sec(b), 81, 0.12, 0.6); // sentinel sonar, one per radar sweep
-for (const [a, z] of [[5, 6], [10, 11], [22.5, CUE.awake], [29, CUE.ff[0]], [35, CUE.pr], [38, CUE.title]] as const) riser(sec(a), sec(z), a === 22.5 ? 1.3 : 1);
+const chordAtT = (t: number) => chordAt(Math.floor((t - take(TAKES.findLastIndex((_, i) => take(i).start <= t)).start) / BAR));
+for (const t of hits()) impact(t, t === 0 ? 1.1 : 0.85);
+for (const t of ticks()) ping(t, chordAtT(t).notes[3]! + 24, 0.13, (Math.round(t * 7) % 2) * 2 - 1);
+for (const t of [take(1).start, take(2).start, take(4).start, C.awake, C.ff]) riser(Math.max(0, t - BAR), t, t === C.awake ? 1.3 : 1);
 
-// a fifth below the root under the breakdown, for tension
+// a low fifth under the breakdown, for tension
 {
-  const i0 = Math.round(sec(18) * SR), n = Math.round(sec(CUE.awake - 18) * SR);
+  const i0 = Math.round(take(3).start * SR), n = Math.round((C.awake - take(3).start) * SR);
   for (let k = 0; k < n; k++) {
     const tau = k / SR, env = Math.min(1, tau / 1.5) * Math.min(1, (n / SR - tau) / 0.3);
     bass.add(i0 + k, (Math.sin(2 * Math.PI * mtof(26) * tau) * 0.5 + Math.sin(2 * Math.PI * mtof(33) * tau) * 0.25) * env * 0.22);
@@ -255,7 +304,27 @@ for (let i = 0; i < N; i++) {
 }
 let peak = 0;
 for (let i = 0; i < N; i++) peak = Math.max(peak, Math.abs(L[i]!), Math.abs(R[i]!));
-const g = 0.89 / peak;
+for (let i = 0; i < N; i++) { L[i]! *= 0.89 / peak; R[i]! *= 0.89 / peak; }
+
+// the voice, centred, each take at its start; the beat sits low under it and ducks further while it speaks
+const voice = new Float32Array(N);
+voices.forEach((v, i) => { if (v) voice.set(v.subarray(0, N - Math.round(take(i).start * SR)), Math.round(take(i).start * SR)); });
+const hasVoice = voices.some(Boolean);
+if (hasVoice) {
+  let vp = 0;
+  for (let i = 0; i < N; i++) vp = Math.max(vp, Math.abs(voice[i]!));
+  let env = 0;
+  for (let i = 0; i < N; i++) {
+    const x = Math.abs(voice[i]! / vp);
+    env += (x > env ? 0.01 : 0.00004) * (x - env); // fast attack, ~0.5 s release
+    const m = 0.4 * (1 - 0.55 * Math.min(1, env * 4)), v = (voice[i]! / vp) * 0.85;
+    L[i] = L[i]! * m + v;
+    R[i] = R[i]! * m + v;
+  }
+}
+let p2 = 0;
+for (let i = 0; i < N; i++) p2 = Math.max(p2, Math.abs(L[i]!), Math.abs(R[i]!));
+const g = Math.min(1, 0.95 / p2);
 
 // ---------------------------------------------------------------- write
 const wav = Buffer.alloc(44 + N * 4);
@@ -269,7 +338,7 @@ for (let i = 0; i < N; i++) {
 }
 const outDir = path.join(ROOT, 'out', VIDEO);
 mkdirSync(outDir, { recursive: true });
-writeFileSync(path.join(outDir, 'beat.wav'), wav);
+writeFileSync(path.join(outDir, 'soundtrack.wav'), wav);
 
 // loudness envelope at 100 fps (0..1), for the plates
 const FPS = 100, rms: number[] = [];
@@ -283,11 +352,13 @@ const rmax = Math.max(...rms);
 const r3 = (x: number) => Math.round(x * 1000) / 1000;
 const audio = {
   duration: DURATION, bpm: BPM, fps: FPS,
-  beats: Array.from({ length: BARS * 4 }, (_, i) => r3(i * BEAT)),
-  downbeats: Array.from({ length: BARS }, (_, i) => r3(i * BAR)),
-  sections: SECTIONS.map((s) => ({ name: s.id, start: r3(sec(s.from)), end: r3(sec(s.to)) })),
+  beats: beatTimes.map(r3),
+  downbeats: downbeats.map(r3),
+  // the takes: timeline.ts cuts on these, so the edit follows the recorded voice
+  sections: TAKES.map((t, i) => ({ name: t.id, start: r3(take(i).start), end: r3(take(i).end), voice: !!voices[i] })),
   features: { rms: rms.map((x) => r3(x / rmax)) },
   onsets: { kick: kicks.map(([t, v]) => [r3(t), v]), snare: snares.map(([t, v]) => [r3(t), v]), hat: hats.map(([t, v]) => [r3(t), r3(v)]) },
 };
 writeFileSync(path.join(import.meta.dir, '../data/audio.json'), JSON.stringify(audio));
-console.log(`beat: ${path.relative(ROOT, path.join(outDir, 'beat.wav'))} (${DURATION}s, ${BPM} BPM, peak gain ${g.toFixed(2)}), data/audio.json (${kicks.length} kicks, ${snares.length} snares, ${hats.length} hats)`);
+const takes = TAKES.map((t, i) => `${t.id} ${take(i).dur.toFixed(2)}s${voices[i] ? '' : ' (sin voz: estimada)'}`).join(', ');
+console.log(`soundtrack: ${path.relative(ROOT, path.join(outDir, 'soundtrack.wav'))} (${DURATION.toFixed(2)}s, ${BPM} BPM${hasVoice ? ', con voz' : ', solo beat'}). ${takes}`);

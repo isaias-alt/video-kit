@@ -1,28 +1,23 @@
-// The diagram, drawn as a pure function of time: painted sprites revealed on their cues, plus the live parts
-// (thinking orbs, the sentinel's polls, the wake, the fast-forward) in Canvas2D. World units; the caller has
-// already applied the camera.
+// The diagram, drawn as a pure function of time: painted sprites revealed on their cues (words of the voice
+// takes, see score.ts), plus the live parts (thinking orbs, the sentinel's polls, the wakes, the fast-forward) in
+// Canvas2D. World units; the caller has already applied the camera.
 import type { Frame } from '@engine/scene';
 import { clamp, ease, lerp, pointAtLength, polylineLengths, prog, type V2 } from '@engine/util';
 import { drawOrb, type OrbState } from '@kit/orb';
 import { rr } from '@kit/draw';
 import { C, FONT, alpha } from './brand';
 import {
-  CAMPS, CAMP_W, CAMP_Y, COMMANDER, CUE, GATE, GENERAL, LEFT_BRANCH, LEFT_COMMITS, LEFT_LEN, MAIN_COMMITS, MAIN_X, MAIN_Y,
-  SENTINEL, STATIONS, STATION_W, WAKE_PATH, campBottom, campTop,
+  CAMPS, CAMP_W, CAMP_Y, COMMANDER, GATE, GENERAL, LEFT_BRANCH, LEFT_COMMITS, LEFT_LEN, MAIN_COMMITS, MAIN_X, MAIN_Y,
+  QUEUE, SENTINEL, WAKE_PATH, campBottom, campTop,
 } from './layout';
 import type { Sprite, WorldSprites } from './paint';
-import { barOf } from './score';
-
-export interface WorldOpts {
-  /** Show the world as it is at this bar (the hook previews the finished system). Default: now. */
-  stateBar?: number;
-}
+import type { Cues } from './score';
 
 type Ctx = CanvasRenderingContext2D;
 type Dir = 'down' | 'up' | 'right' | 'left' | 'radial';
 
-/** Reveal 0..1 of something that starts at bar `a` and takes `len` bars. */
-const rv = (sb: number, a: number, len = 0.5, fn = ease.outCubic) => prog(sb, a, a + len, fn);
+/** Reveal 0..1 of something that starts at `a` seconds and takes `len` seconds. */
+const rv = (t: number, a: number, len = 0.6, fn = ease.outCubic) => prog(t, a, a + len, fn);
 
 /** A sprite, multiplied onto the paper, wiped in by p (0..1). */
 function put(c: Ctx, s: Sprite, p = 1, dir: Dir = 'radial', alpha = 1) {
@@ -100,6 +95,18 @@ function check(c: Ctx, x: number, y: number, r: number, color: string, p: number
   c.restore();
 }
 
+/** A "?" badge: blocked, waiting for an answer. */
+function mark(c: Ctx, x: number, y: number, r: number, p: number) {
+  if (p <= 0) return;
+  c.save();
+  c.translate(x, y);
+  c.scale(ease.outBack(p), ease.outBack(p));
+  c.beginPath(); c.arc(0, 0, r, 0, Math.PI * 2); c.fillStyle = C.vermilion; c.fill();
+  c.fillStyle = C.card; c.font = FONT.mono(r * 1.3, 700); c.textAlign = 'center'; c.textBaseline = 'middle';
+  c.fillText('?', 0, 1);
+  c.restore();
+}
+
 const pts = (a: [number, number][]) => a.map(([x, y]) => ({ x, y }));
 const WAKE = pts(WAKE_PATH);
 const WAKE_L = polylineLengths(WAKE);
@@ -129,34 +136,21 @@ function leftLenAtY(y: number) {
   return LEFT_LEN[LEFT_LEN.length - 1]!;
 }
 
-export function drawWorld(c: Ctx, S: WorldSprites, f: Frame, o: WorldOpts = {}) {
-  const t = f.t, bar = barOf(t), sb = o.stateBar ?? bar;
-  const kick = f.a.kick, preview = o.stateBar !== undefined;
+export function drawWorld(c: Ctx, S: WorldSprites, f: Frame, K: Cues) {
+  const t = f.t, kick = f.a.kick;
 
-  // ---- the general and the commander
-  const pg = rv(sb, CUE.general);
-  put(c, S.general, pg);
-  label(c, 'vos', GENERAL.x + 62, GENERAL.y - 30, FONT.mono(24, 700), C.ink, 'left', pg);
-  label(c, 'el general', GENERAL.x + 62, GENERAL.y - 2, FONT.mono(20), C.muted, 'left', pg);
-  put(c, S.talk, rv(sb, CUE.talk, 0.5), 'down');
-  // a prompt travelling down to the commander on every bar of the commander beat
-  if (!preview && bar >= CUE.talk + 0.5 && bar < 6) {
-    const k = ease.inOutQuad(((bar - CUE.talk - 0.5) % 1));
-    dot(c, GENERAL.x, lerp(GENERAL.y + 66, COMMANDER.y - COMMANDER.r - 18, k), 7, C.ochre, C.paper, Math.sin(k * Math.PI));
-  }
-  const ph = rv(sb, CUE.commander);
+  // ---- the commander (named in toma-01), busy from the first dispatch, free (not blocked) while soldiers work
+  const ph = rv(t, K.pieces[0]);
   put(c, S.halo, ph);
-  const asleep = !preview && sb >= CUE.sentinel && sb < CUE.awake;
   if (ph > 0) {
     const d = 178 * ease.outBack(ph) * (1 + 0.05 * kick);
-    const busy: OrbState = 'connecting';
-    if (sb < CUE.sentinel || preview) orbSwap(c, sb, CUE.typing, 'breathing', busy, COMMANDER.x, COMMANDER.y - 6, t, { d, color: C.lapis });
-    else orbSwap(c, sb, CUE.awake, 'breathing', busy, COMMANDER.x, COMMANDER.y - 6, t, { d, color: C.lapis, alpha: asleep ? 0.5 : 1, speed: asleep ? 0.5 : 1 });
+    const free = t >= K.start[3] && t < K.awake;
+    if (t < K.start[3]) orbSwap(c, t, K.reparte, 'breathing', 'connecting', COMMANDER.x, COMMANDER.y - 6, t, { d, color: C.lapis });
+    else orbSwap(c, t, K.awake, 'breathing', 'connecting', COMMANDER.x, COMMANDER.y - 6, t, { d, color: C.lapis, alpha: free ? 0.6 : 1, speed: free ? 0.6 : 1 });
     label(c, 'commander', COMMANDER.x, COMMANDER.y + 114, FONT.mono(28, 700), C.ink, 'center', ph);
-    if (asleep) label(c, 'en espera', COMMANDER.x, COMMANDER.y + 140, FONT.mono(18), C.muted, 'center', rv(sb, CUE.sentinel + 0.5));
+    if (free) label(c, 'libre', COMMANDER.x, COMMANDER.y + 142, FONT.mono(20), C.muted, 'center', rv(t, K.start[3] + 0.3));
   }
-  // woken: a ring bursts out of the commander
-  const wk = !preview ? prog(bar, CUE.awake, CUE.awake + 0.6) : 0;
+  const wk = prog(t, K.awake, K.awake + 0.7);
   if (wk > 0 && wk < 1) {
     c.save();
     c.globalAlpha = 1 - wk;
@@ -165,48 +159,51 @@ export function drawWorld(c: Ctx, S: WorldSprites, f: Frame, o: WorldOpts = {}) 
     c.restore();
   }
 
-  // ---- dispatch and the soldiers
-  S.dispatch.forEach((s, i) => put(c, s, rv(sb, CUE.dispatch + i * 0.15, 0.6), 'down'));
-  const struck = rv(sb, CUE.strike, 0.5, ease.inOutQuad);
+  // ---- the human, who only shows up to approve (toma-05)
+  const pg = rv(t, K.gate);
+  put(c, S.general, pg);
+  label(c, 'vos', GENERAL.x + 62, GENERAL.y - 30, FONT.mono(24, 700), C.ink, 'left', pg);
+  label(c, 'el humano', GENERAL.x + 62, GENERAL.y - 2, FONT.mono(20), C.muted, 'left', pg);
+  put(c, S.talk, rv(t, K.gate + 0.3), 'down');
+
+  // ---- soldiers (named in toma-01), dispatched and labelled in toma-02, in their camps
+  S.dispatch.forEach((s, i) => put(c, s, rv(t, K.reparte + i * 0.15, 0.7), 'down'));
   CAMPS.forEach((cp, i) => {
     const x = cp.x - CAMP_W / 2;
-    const fade = i === 0 ? 1 - struck : 1;
-    put(c, S.camps[i]!, rv(sb, CUE.camps[i]!, 0.5), 'down', fade);
-    const ph = rv(sb, CUE.camps[i]! + 0.25, 0.4);
-    label(c, `camp ${i + 1}`, x + 16, campTop + 29, FONT.mono(21, 700), C.ink, 'left', ph * fade);
-    label(c, 'herdr', x + CAMP_W - 16, campTop + 29, FONT.mono(21), C.muted, 'right', rv(sb, CUE.panes + i * 0.15, 0.4) * fade);
+    put(c, S.camps[i]!, rv(t, K.pieces[2] + i * 0.1, 0.5), 'down');
+    const pb = rv(t, K.pieces[2] + i * 0.1 + 0.25, 0.4);
+    label(c, `camp ${i + 1}`, x + 16, campTop + 29, FONT.mono(21, 700), C.ink, 'left', pb);
+    label(c, 'herdr', x + CAMP_W - 16, campTop + 29, FONT.mono(21), C.muted, 'right', rv(t, K.panel + i * 0.12, 0.4));
 
-    // the soldier travels from the commander down its dispatch stroke, then works in its camp
-    const land = CUE.soldiers[i]!, ox = cp.x, oy = CAMP_Y - 22;
-    const tr = prog(sb, land - 0.5, land, ease.inQuad);
-    if (tr <= 0) return;
-    const sx = lerp(COMMANDER.x, ox, tr), sy = lerp(COMMANDER.y + 30, oy, tr) - Math.sin(tr * Math.PI) * 60;
-    const done = (i === 0 && sb >= CUE.done) || (i === 1 && sb >= CUE.report) || (i === 2 && sb >= CUE.pr);
-    const d = 128 * lerp(0.35, 1, tr) * (1 + 0.04 * kick);
-    const alpha = (done ? 0.5 : 1) * fade;
-    if (done) orbSwap(c, sb, i === 0 ? CUE.done : i === 1 ? CUE.report : CUE.pr, cp.orb, 'breathing', sx, sy, t, { d, color: cp.color, alpha: fade });
-    else drawOrb(c, cp.orb, sx, sy, t + i * 3.1, { d, color: cp.color, alpha });
-    const rip = prog(sb, land, land + 0.4);
-    if (rip > 0 && rip < 1 && !preview) {
+    const ox = cp.x, oy = CAMP_Y - 22;
+    const ps = rv(t, K.pieces[1] + i * 0.12, 0.45, ease.outBack);
+    if (ps <= 0) return;
+    const done = i === 0 && t >= K.done, blocked = i === 2 && t >= K.blocked;
+    const d = 128 * ps * (1 + 0.04 * kick);
+    if (i === 0) orbSwap(c, t, K.done, cp.orb, 'breathing', ox, oy, t, { d, color: cp.color, alpha: done ? 0.55 : 1 });
+    else drawOrb(c, cp.orb, ox, oy, t + i * 3.1, { d, color: cp.color, alpha: blocked ? 0.55 : 1, speed: blocked ? 0.3 : 1 });
+    // a dispatched soldier arrives: a ring on its pane
+    const rip = prog(t, K.reparte + 0.5 + i * 0.15, K.reparte + 1 + i * 0.15);
+    if (rip > 0 && rip < 1) {
       c.save(); c.globalAlpha = (1 - rip) * 0.8; c.strokeStyle = cp.color; c.lineWidth = 3;
       c.beginPath(); c.arc(ox, oy, 60 + rip * 70, 0, Math.PI * 2); c.stroke(); c.restore();
     }
-    const pk = rv(sb, CUE.kinds + i * 0.12, 0.4);
-    label(c, cp.kind.toUpperCase(), ox, CAMP_Y + 76, FONT.mono(28, 700), cp.color, 'center', pk * fade);
-    label(c, cp.model, ox, CAMP_Y + 104, FONT.mono(22), C.muted, 'center', rv(sb, CUE.models[i]!, 0.4) * fade);
-    label(c, cp.branch, ox, CAMP_Y + 129, FONT.mono(21, 700), cp.kind === 'scout' ? C.muted : C.ink, 'center', rv(sb, CUE.branches + 0.3 * i, 0.5) * fade);
-    // status badge (top-right corner): running, then done
-    const pb = rv(sb, Math.max(land, CUE.camps[i]! + 0.4), 0.3) * fade;
-    if (pb > 0) {
-      const bx = x + CAMP_W - 2, by = campTop + 2;
-      if (!done) dot(c, bx, by, 9 + 3 * Math.sin(t * 6 + i), cp.color, C.paper, pb);
-      else check(c, bx, by, 17, C.moss, rv(sb, i === 0 ? CUE.done : i === 1 ? CUE.report : CUE.pr, 0.35, ease.linear) * fade);
-    }
+    label(c, cp.kind.toUpperCase(), ox, CAMP_Y + 76, FONT.mono(28, 700), cp.color, 'center', rv(t, K.soldier + i * 0.12, 0.4));
+    label(c, cp.branch, ox, CAMP_Y + 112, FONT.mono(21, 700), cp.kind === 'scout' ? C.muted : C.ink, 'center', rv(t, K.branch + 0.3 * i, 0.5));
+    // status, top-right corner: working, then done (camp 1) or blocked (camp 3)
+    const bx = x + CAMP_W - 2, by = campTop + 2, pa = rv(t, K.reparte + 0.6, 0.3);
+    if (done) check(c, bx, by, 17, C.moss, rv(t, K.done, 0.35, ease.linear));
+    else if (blocked) mark(c, bx, by, 17, rv(t, K.blocked, 0.35, ease.linear));
+    else if (pa > 0) dot(c, bx, by, 9 + 3 * Math.sin(t * 6 + i), cp.color, C.paper, pa);
+    if (done) chip(c, 'done', ox, campTop - 26, { font: FONT.mono(22, 700), color: C.moss, alpha: rv(t, K.done, 0.3) });
+    if (blocked) chip(c, 'blocked', ox, campTop - 26, { font: FONT.mono(22, 700), color: C.vermilion, alpha: rv(t, K.blocked, 0.3) });
   });
-  if (struck > 0) label(c, 'strike: el camp vuelve al pool', CAMPS[0]!.x + 10, CAMP_Y, FONT.mono(19, 700), C.muted, 'center', struck);
+  // toma-03: the camp is a worktree with its own branch
+  const pw = rv(t, K.worktree, 0.5) * (1 - rv(t, K.ojo - 0.3, 0.3));
+  if (pw > 0) chip(c, 'camp = git worktree', CAMPS[0]!.x + 40, campTop - 44, { font: FONT.mono(26, 700), color: C.ink, alpha: pw, pad: 16 });
 
-  // ---- caution: a camp is not a sandbox
-  const pc = !preview ? rv(sb, CUE.caution, 0.5) * (1 - rv(sb, 18, 0.4)) : 0;
+  // ---- caution: no container, no sandbox
+  const pc = rv(t, K.ojo, 0.5) * (1 - rv(t, K.end[2] - 0.2, 0.2));
   if (pc > 0) {
     put(c, S.host, pc);
     label(c, '~/.ssh', S.host.x + S.host.w / 2 + 2, S.host.y + S.host.h + 18, FONT.mono(20, 700), C.vermilion, 'center', pc);
@@ -216,89 +213,90 @@ export function drawWorld(c: Ctx, S: WorldSprites, f: Frame, o: WorldOpts = {}) 
     c.strokeStyle = C.vermilion; c.lineWidth = 3;
     c.beginPath(); c.moveTo(CAMPS[0]!.x - 70, campTop + 6); c.quadraticCurveTo(CAMPS[0]!.x - 80, campTop - 50, S.host.x + S.host.w / 2 + 30, S.host.y + S.host.h - 16); c.stroke();
     c.restore();
-    label(c, 'puede leer', CAMPS[0]!.x + 6, campTop - 60, FONT.mono(19, 700), C.vermilion, 'left', pc);
+    label(c, 'lee el host', CAMPS[0]!.x + 6, campTop - 60, FONT.mono(19, 700), C.vermilion, 'left', pc);
   }
 
-  // ---- git: main and the mission branches
-  const pm = rv(sb, CUE.main, 0.75);
+  // ---- git: main and the mission branches (toma-03), the commits (toma-04), the fast-forward (toma-05)
+  const pm = rv(t, K.branch, 0.6);
   put(c, S.main, pm, 'right');
-  const pbr = rv(sb, CUE.branches, 1, ease.inOutQuad);
+  const pbr = rv(t, K.branch + 0.3, 0.9, ease.inOutQuad);
   put(c, S.branchL, pbr, 'up');
   put(c, S.branchR, pbr, 'up');
   for (const x of MAIN_COMMITS) if (pm > (x - 70) / 480) dot(c, x, MAIN_Y, 9, C.ink);
-  // the left mission's commits, then main fast-forwarding through them
-  const ff = !preview ? prog(sb, CUE.ff[0], CUE.ff[1], ease.inOutCubic) : 0;
+  const ff = prog(t, K.ff, K.ff + 1.2, ease.inOutCubic);
   const tipLen = leftLenAtY(LEFT_COMMITS[1]!);
   if (ff > 0) inkAlong(c, LEFT_BRANCH, LEFT_LEN, 0, tipLen * ff, 9, C.ink);
-  LEFT_COMMITS.forEach((y, k) => { const p = rv(sb, CUE.done + k * 0.25, 0.3, ease.outBack); if (p > 0) dot(c, CAMPS[0]!.x, y, 9 * p, ff * tipLen >= leftLenAtY(y) ? C.ink : C.lapis); });
+  LEFT_COMMITS.forEach((y, k) => { const p = rv(t, K.done + k * 0.2, 0.35, ease.outBack); if (p > 0) dot(c, CAMPS[0]!.x, y, 9 * p, ff * tipLen >= leftLenAtY(y) ? C.ink : C.lapis); });
   if (pm > 0.9) {
     const at = pointAtLength(LEFT_BRANCH, LEFT_LEN, tipLen * ff);
     const onMain = ff <= 0;
-    chip(c, 'main', onMain ? MAIN_X[1] : at.x - 22, onMain ? MAIN_Y + 46 : at.y, { font: FONT.mono(20, 700), color: C.card, fill: C.ink, border: 'none', align: onMain ? 'center' : 'right', alpha: rv(sb, CUE.main + 0.5, 0.3) });
+    chip(c, 'main', onMain ? MAIN_X[1] : at.x - 22, onMain ? MAIN_Y + 46 : at.y, { font: FONT.mono(20, 700), color: C.card, fill: C.ink, border: 'none', align: onMain ? 'center' : 'right', alpha: rv(t, K.branch + 0.5, 0.3) });
   }
 
-  // ---- the sentinel
-  const ps = rv(sb, CUE.sentinel);
-  put(c, S.sentinel, ps);
-  put(c, S.wake, rv(sb, CUE.wakePath, 0.75, ease.inOutQuad), 'up', 0.55);
-  if (ps > 0) {
-    drawOrb(c, 'listening', SENTINEL.x, SENTINEL.y - 12, t, { d: 140 * ease.outBack(ps) * (1 + 0.05 * f.a.snare), color: C.vermilion });
-    label(c, 'sentinel', SENTINEL.x, SENTINEL.y + 84, FONT.mono(27, 700), C.vermilion, 'center', ps);
+  // ---- the sentinel (named in toma-01), polling in toma-04
+  const pse = rv(t, K.pieces[3]);
+  put(c, S.sentinel, pse);
+  if (pse > 0) {
+    drawOrb(c, 'listening', SENTINEL.x, SENTINEL.y - 12, t, { d: 140 * ease.outBack(pse) * (1 + 0.05 * f.a.snare), color: C.vermilion });
+    label(c, 'sentinel', SENTINEL.x, SENTINEL.y + 84, FONT.mono(27, 700), C.vermilion, 'center', pse);
   }
-  // polling: one radar sweep per bar, and a probe running to every pane and back
-  if (sb >= CUE.scanFrom && (sb < CUE.awake || preview) && ps > 0) {
-    const ph = bar % 1;
+  if (t >= K.sondea && t < K.end[3] + 0.5) {
+    const k0 = rv(t, K.sondea, 0.4), loud = 1 + 0.6 * (prog(t, K.polling, K.polling + 0.2) - prog(t, K.polling + 1.4, K.polling + 1.8));
+    const ph = (f.bar % 1 + 1) % 1;
     c.save();
-    c.globalAlpha = 0.45 * (1 - ph);
+    c.globalAlpha = 0.45 * (1 - ph) * k0;
     c.strokeStyle = C.vermilion; c.lineWidth = 3;
     c.beginPath(); c.arc(SENTINEL.x, SENTINEL.y, SENTINEL.r + ph * 620, Math.PI * 1.05, Math.PI * 1.95); c.stroke();
     c.restore();
     CAMPS.forEach((cp, i) => {
-      const k = ((bar + i * 0.22) % 1) / 0.6;
-      if (k > 1) return;
       const y0 = SENTINEL.y - SENTINEL.r, y1 = campBottom + 8, x0 = SENTINEL.x + (cp.x - SENTINEL.x) * 0.3;
-      const u = k < 0.5 ? k * 2 : 2 - k * 2;
       c.save();
-      c.globalAlpha = 0.5;
-      c.setLineDash([3, 9]); c.strokeStyle = C.vermilion; c.lineWidth = 2;
+      c.globalAlpha = 0.5 * k0 * loud;
+      c.setLineDash([3, 9]); c.strokeStyle = C.vermilion; c.lineWidth = 2 * loud;
       c.beginPath(); c.moveTo(x0, y0); c.lineTo(cp.x, y1); c.stroke();
       c.restore();
-      dot(c, lerp(x0, cp.x, u), lerp(y0, y1, u), 6, C.vermilion);
+      const k = ((f.bar + i * 0.22) % 1 + 1) % 1 / 0.6;
+      if (k <= 1) { const u = k < 0.5 ? k * 2 : 2 - k * 2; dot(c, lerp(x0, cp.x, u), lerp(y0, y1, u), 6, C.vermilion, C.paper, k0); }
     });
-  }
-  // the wake: from the sentinel to the commander's queue
-  const wp = !preview ? prog(bar, CUE.wake[0], CUE.wake[1], ease.inOutCubic) : 0;
-  if (wp > 0 && wp < 1) {
-    for (let k = 6; k >= 0; k--) {
-      const q = pointAtLength(WAKE, WAKE_L, WAKE_L[WAKE_L.length - 1]! * Math.max(0, wp - k * 0.025));
-      dot(c, q.x, q.y, 15 - k * 1.6, C.vermilion, C.paper, k === 0 ? 1 : 0.35 * (1 - k / 7));
-    }
-    const q = pointAtLength(WAKE, WAKE_L, WAKE_L[WAKE_L.length - 1]! * wp);
-    chip(c, 'wake: camp 1 done', q.x + 26, q.y, { font: FONT.mono(19, 700), color: C.vermilion, align: 'left' });
-  }
-  // the states a soldier can settle in
-  const pst = !preview ? rv(sb, CUE.states, 0.5) * (1 - rv(sb, 26, 0.3)) : 0;
-  if (pst > 0) {
-    const words = ['done', 'blocked', 'interrupted', 'unconfirmed'];
-    c.font = FONT.mono(24, 700);
-    const ws = words.map((w) => c.measureText(w).width + 24), gap = 12, total = ws.reduce((a, b) => a + b, 0) + gap * 3;
-    let x = SENTINEL.x - total / 2;
-    words.forEach((w, k) => {
-      chip(c, w, x, 1398, { font: FONT.mono(24, 700), color: k === 0 ? C.moss : C.vermilion, align: 'left', alpha: rv(sb, CUE.states + k * 0.12, 0.3) * (pst > 0 ? 1 : 0) * Math.min(1, pst * 2) });
-      x += ws[k]! + gap;
-    });
+    label(c, 'sondeo', SENTINEL.x + 128, SENTINEL.y - 70, FONT.mono(20, 700), C.vermilion, 'left', k0);
   }
 
-  // ---- the scout's report
-  const pr = rv(sb, CUE.report);
-  put(c, S.report, pr);
-  label(c, 'reporte.md', S.report.x + S.report.w / 2, S.report.y + S.report.h + 14, FONT.mono(17, 700), C.ink, 'center', pr);
+  // ---- the wakes: the sentinel drops an aviso in the commander's queue; the Stop hook delivers it (and it is gone)
+  put(c, S.wake, rv(t, K.sondea, 0.8, ease.inOutQuad), 'up', 0.55);
+  const pq = rv(t, K.sondea + 0.3, 0.4);
+  put(c, S.queue, pq);
+  label(c, 'cola de avisos', QUEUE.x, QUEUE.y - QUEUE.h / 2 + 24, FONT.mono(17, 700), C.vermilion, 'center', pq);
+  const wakes = [{ at: K.done + 0.1, text: 'camp 1: done' }, { at: K.blocked + 0.1, text: 'camp 3: blocked' }];
+  wakes.forEach((w, k) => {
+    const travel = prog(t, w.at, w.at + 0.9, ease.inOutCubic);
+    const deliver = prog(t, K.awake + k * 0.45, K.awake + k * 0.45 + 0.45, ease.inOutCubic);
+    if (travel <= 0 || deliver >= 1) return;
+    const slot = { x: QUEUE.x - QUEUE.w / 2 + (k + 0.5) * (QUEUE.w / 3), y: QUEUE.y + 20 };
+    let x: number, y: number;
+    if (travel < 1) { const q = pointAtLength(WAKE, WAKE_L, WAKE_L[WAKE_L.length - 1]! * travel); x = q.x; y = q.y; }
+    else if (deliver <= 0) { x = slot.x; y = slot.y; }
+    else { x = lerp(slot.x, COMMANDER.x + COMMANDER.r - 10, deliver); y = lerp(slot.y, COMMANDER.y - 10, deliver); }
+    dot(c, x, y, 13, C.vermilion);
+    if (travel < 1) chip(c, w.text, x + 24, y, { font: FONT.mono(19, 700), color: C.vermilion, align: 'left' });
+  });
+  // delivery is an event for the commander: a solid arrow from the queue
+  const pe = rv(t, K.awake, 0.3) * (1 - rv(t, K.end[3] - 0.3, 0.3));
+  if (pe > 0) {
+    const x0 = QUEUE.x - QUEUE.w / 2 - 6, x1 = COMMANDER.x + COMMANDER.r + 8, y = QUEUE.y - 6;
+    c.save();
+    c.globalAlpha = pe;
+    c.strokeStyle = C.vermilion; c.fillStyle = C.vermilion; c.lineWidth = 5;
+    c.beginPath(); c.moveTo(x0, y); c.lineTo(x1 + 14, y); c.stroke();
+    c.beginPath(); c.moveTo(x1, y); c.lineTo(x1 + 18, y - 11); c.lineTo(x1 + 18, y + 11); c.closePath(); c.fill();
+    c.restore();
+    label(c, 'evento', (x0 + x1) / 2 + 6, y - 16, FONT.mono(20, 700), C.vermilion, 'center', rv(t, K.evento, 0.3));
+  }
 
-  // ---- land: the gate, the question, the fast-forward
-  const pgt = rv(sb, CUE.gate);
+  // ---- land (toma-05): the gate, the question, the yes, the fast-forward
+  const pgt = rv(t, K.gate);
   put(c, S.gatePosts, pgt);
   if (pgt > 0) {
-    const open = !preview ? prog(sb, CUE.gateOpen, CUE.gateOpen + 0.3, ease.outBack) : 0;
+    const open = prog(t, K.approve + 0.3, K.approve + 0.75, ease.outBack);
     const top = GATE.y - GATE.h / 2;
     c.save();
     c.beginPath(); c.rect(S.gateBar.x - 200, S.gateBar.y - 200, S.gateBar.w + 400, (S.gateBar.h + 200) * pgt + 200); c.clip();
@@ -309,45 +307,22 @@ export function drawWorld(c: Ctx, S: WorldSprites, f: Frame, o: WorldOpts = {}) 
     c.restore();
     label(c, 'aprobación', GATE.x, top - 34, FONT.mono(19, 700), C.ochre, 'center', pgt);
   }
-  if (!preview) {
-    const pa = rv(sb, CUE.ask, 0.35) * (1 - rv(sb, 31.5, 0.4));
-    if (pa > 0) chip(c, 'commander: ¿aterrizo camp 1?', 70, 1690, { font: FONT.mono(21, 700), color: C.lapis, align: 'left', alpha: pa, pad: 16 });
-    const py = rv(sb, CUE.approve, 0.3, ease.outBack) * (1 - rv(sb, 31.5, 0.4));
-    if (py > 0) chip(c, 'vos: sí', 470, 1748, { font: FONT.mono(21, 700), color: C.ochre, align: 'left', alpha: Math.min(1, py), pad: 16 });
-    const pf = rv(sb, CUE.ff[0], 0.4) * (1 - rv(sb, 32, 0.3));
-    if (pf > 0) {
-      label(c, 'fast-forward', CAMPS[0]!.x + 22, LEFT_COMMITS[1]! - 84, FONT.mono(20, 700), C.ink, 'left', pf);
-      label(c, 'sin merge commit', CAMPS[0]!.x + 22, LEFT_COMMITS[1]! - 60, FONT.mono(19), C.muted, 'left', pf);
-    }
-  }
-
-  // ---- ship: the tribunal stations on the right branch
-  STATIONS.forEach((s, k) => {
-    const p = rv(sb, 32.1 + k * 0.15, 0.4);
-    if (p <= 0) return;
-    put(c, S.stations[k]!, p);
-    const x = CAMPS[2]!.x;
-    const big = s.label === 'review';
-    label(c, s.label === 'PR' ? 'PR abierto' : s.label, x, s.y + (big ? -26 : 9), FONT.mono(26, 700), s.label === 'review' ? C.vermilion : C.ink, 'center', p);
-    if (big) label(c, 'sesión nueva', x, s.y + 2, FONT.mono(18), C.muted, 'center', p);
-    const passAt = k < 2 ? CUE.stations[k]! : k === 2 ? CUE.reviewed : CUE.pr;
-    check(c, x + STATION_W / 2 - 4, s.y - s.h / 2 + 4, 15, C.moss, rv(sb, passAt, 0.3, ease.linear));
-    if (big && sb >= CUE.stations[2]!) drawOrb(c, sb < CUE.reviewed ? 'solving' : 'breathing', x, s.y + 40, t, { d: 58, color: C.vermilion, alpha: rv(sb, CUE.stations[2]!, 0.3) });
-  });
-  // the change moving through the stations
-  if (!preview && sb >= 32.4 && sb < CUE.pr + 0.6) {
-    const ys = [campBottom + 20, STATIONS[0]!.y, STATIONS[1]!.y, STATIONS[2]!.y, STATIONS[3]!.y];
-    const ts = [32.4, CUE.stations[0], CUE.stations[1], CUE.stations[2], CUE.pr] as number[];
-    let y = ys[0]!;
-    for (let k = 1; k < ts.length; k++) if (sb >= ts[k - 1]!) y = lerp(ys[k - 1]!, ys[k]!, prog(sb, ts[k - 1]!, ts[k - 1]! + 0.3, ease.inOutCubic));
-    dot(c, CAMPS[2]!.x - STATION_W / 2 - 18, y, 9, C.lapis);
+  const fadeLand = 1 - rv(t, K.end[4] - 0.3, 0.3);
+  const pa = rv(t, K.ask, 0.4) * fadeLand;
+  if (pa > 0) chip(c, 'commander: ¿aterrizo camp 1?', 70, 1690, { font: FONT.mono(21, 700), color: C.lapis, align: 'left', alpha: pa, pad: 16 });
+  const py = rv(t, K.approve, 0.35, ease.outBack) * fadeLand;
+  if (py > 0) chip(c, 'vos: sí', 470, 1748, { font: FONT.mono(21, 700), color: C.ochre, align: 'left', alpha: Math.min(1, py), pad: 16 });
+  const pf = rv(t, K.ff, 0.5) * fadeLand;
+  if (pf > 0) {
+    label(c, 'fast-forward', CAMPS[0]!.x + 22, LEFT_COMMITS[1]! - 84, FONT.mono(20, 700), C.ink, 'left', pf);
+    label(c, 'sin merge commit', CAMPS[0]!.x + 22, LEFT_COMMITS[1]! - 60, FONT.mono(19), C.muted, 'left', pf);
   }
 }
 
-/** Recap stamps on the map (outro): one per pattern, in world space next to the part it names. */
-export function drawStamps(c: Ctx, sb: number, stamps: { text: string; x: number; y: number; at: number; rot: number }[]) {
+/** Pattern stamps on the map (toma-06): one per pattern, in world space next to the part it names. */
+export function drawStamps(c: Ctx, t: number, stamps: { text: string; x: number; y: number; at: number; rot: number }[]) {
   for (const s of stamps) {
-    const p = rv(sb, s.at, 0.25, ease.outBack);
+    const p = rv(t, s.at, 0.35, ease.outBack);
     if (p <= 0) continue;
     c.save();
     c.translate(s.x, s.y);

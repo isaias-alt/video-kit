@@ -44,14 +44,14 @@ Determinismo, en detalle:
 Cómo se anima algo pintado: con lo que el plate hace por frame, siempre en función de `f.t` / `f.beat`:
 
 - Revelado: clip creciente (barrido o radial) sobre el sprite, con easing desde su cue.
-- "Boil" del fondo: cada sección pinta 3 variantes de la misma composición (mismo campo y mismas posiciones,
+- "Boil" del fondo: cada toma pinta 3 variantes de la misma composición (mismo campo y mismas posiciones,
   `noise` fijo; solo cambia el `random` del grano del pincel) y el plate las alterna en cada corchea
   (`floor(f.beat * 2) % 3`): el papel "hierve" al tempo.
-- Reacción al beat: la opacidad de la capa de la sección sigue `f.a.kick` (onsets del bombo en
+- Reacción al beat: la opacidad de la capa de la toma sigue `f.a.kick` (onsets del bombo en
   `data/audio.json`), y la cámara empuja un 1% en cada golpe.
 
 Costo: memoria. Cada capa de pantalla completa son ~8 MB (1080x1920x4). Este video pinta 1 papel + 3 variantes
-por 8 secciones + ~25 sprites del diagrama: ~230 MB por página, sin problema para Chrome.
+por toma (6 tomas) + ~25 sprites del diagrama: ~200 MB por página, sin problema para Chrome.
 
 Detalles prácticos:
 
@@ -79,7 +79,8 @@ drawOrb(c, 'listening', x, y, f.t, { d: 140, color: C.vermilion });
 - `dark: false` (por defecto): tinta oscura para fondos claros, como el tema `light` del componente. `color`
   es el tinte (`color` del componente).
 - Estados usados en este video: commander `breathing` (en espera) / `connecting` (coordinando), missions
-  `working` y `weaving`, scout `searching`, sentinel `listening`, revisor del PR `solving`.
+  `working` y `weaving`, scout `searching`, sentinel `listening`. Los panes de terminal del hook usan
+  la variante oscura (`dark: true`).
 - React queda instalado como peer dependency del paquete, pero el bundle no lo importa.
 
 ## Licencias

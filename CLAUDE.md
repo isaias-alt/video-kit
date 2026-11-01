@@ -1,6 +1,6 @@
 # video-kit
 
-Taller para hacer videos de motion graphics como código (sin audio por ahora). Cada vez que haya que hacer un
+Taller para hacer videos de motion graphics como código (sin audio por defecto; un video puede traer un beat generado, ver `docs/audio.md`). Cada vez que haya que hacer un
 video, se trabaja acá. El proceso completo está en la skill `video-kit` (`.claude/skills/video-kit/SKILL.md`):
 cargala antes de empezar un video.
 

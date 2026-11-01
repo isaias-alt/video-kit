@@ -84,7 +84,9 @@ importante (la UI de Reels/TikTok los tapa). En una agenda semanal, por ejemplo,
 ## Límites actuales
 
 - Solo plates 2D en Canvas2D. El motor soporta three.js y shaders (`FSPass`), pero no hay plantillas hechas.
-- Sin audio ni sincronización con voz. Para eso hay que producir `data/lyrics.json` con tiempos por palabra (alineación
+- Beat opcional generado por código (`audio/beat.ts`, ver `docs/audio.md` y `videos/vexillum-arquitectura/`); capas
+  pictóricas con p5.brush y orbes de thinking-orbs en `src/kit/` (ver `docs/p5-brush-orbs.md`).
+- Sin voz ni sincronización con voz. Para eso hay que producir `data/lyrics.json` con tiempos por palabra (alineación
   forzada), como en la guía "Motion as Code". No está implementado acá.
 - Render de ~1 min por 30 s a 1080p60 en esta máquina. 4K (`--scale 2`) es bastante más lento.
 - Windows no validado.

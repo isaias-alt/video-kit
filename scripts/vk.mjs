@@ -5,7 +5,7 @@
 //   npm run vk -- dev <video> [--vertical]
 //   npm run vk -- stills <video> --t 1,2.5 [--vertical] [--only id1,id2]
 //   npm run vk -- render <video> [--vertical] [--samples 4] [--scale 2]
-//   npm run vk -- audio <video>      (videos with audio/beat.ts: regenerate the beat and data/audio.json)
+//   npm run vk -- audio <video>      (videos with audio/beat.ts: regenerate the soundtrack and data/audio.json)
 import { spawnSync } from 'node:child_process';
 import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
@@ -49,10 +49,10 @@ const env = {
 const suffix = vertical ? '-vertical' : '';
 const run = (c, a) => { const r = spawnSync(c, a, { cwd: root, env, stdio: 'inherit' }); process.exit(r.status ?? 1); };
 
-// Optional soundtrack: a video that has audio/beat.ts generates out/<video>/beat.wav and its data/audio.json
-// (beat grid, onsets) from code; render then muxes the beat into the MP4. See docs/audio.md.
+// Optional soundtrack: a video that has audio/beat.ts generates out/<video>/soundtrack.wav and its data/audio.json
+// (takes, beat grid, onsets) from code; render then muxes it into the MP4. See docs/audio.md.
 const beatScript = path.join(root, 'videos', name, 'audio/beat.ts');
-const wav = path.join(root, 'out', name, 'beat.wav');
+const wav = path.join(root, 'out', name, 'soundtrack.wav');
 const step = (c, a) => { const r = spawnSync(c, a, { cwd: root, env, stdio: 'inherit' }); if (r.status !== 0) process.exit(r.status ?? 1); };
 const audio = () => step('bun', [beatScript]);
 
@@ -65,11 +65,11 @@ if (cmd === 'render') {
   audio();
   const silent = `out/${name}/${name}${suffix}.video.mp4`;
   step('bun', ['scripts/render.ts', 'video', '--out', silent, ...args]);
-  // the picture is copied as is; the beat is cut to the rendered range, normalised to -14 LUFS (social) and AAC-encoded
+  // the picture is copied as is; the soundtrack is cut to the rendered range, normalised to -14 LUFS (social) and AAC-encoded
   const fi = args.indexOf('--from'), from = fi >= 0 ? args[fi + 1] : '0';
   step(env.FFMPEG, ['-hide_banner', '-loglevel', 'error', '-y', '-i', silent, '-ss', from, '-i', wav, '-map', '0:v', '-map', '1:a',
     '-c:v', 'copy', '-af', 'loudnorm=I=-14:TP=-1.5:LRA=11', '-ar', '48000', '-c:a', 'aac', '-b:a', '192k', '-shortest', '-movflags', '+faststart', out]);
-  console.log(`wrote ${out} (picture + beat)`);
+  console.log(`wrote ${out} (picture + soundtrack)`);
   process.exit(0);
 }
 if (cmd === 'stills') run('bun', ['scripts/render.ts', 'stills', '--out', `out/${name}/wip${suffix}`, ...args]);

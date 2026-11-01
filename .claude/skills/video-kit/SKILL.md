@@ -62,7 +62,8 @@ Pixel perfection: si algo se ve mal aunque no sea lo pedido, arreglalo.
 npm run vk -- render <video> [--vertical]
 ```
 
-Salida en `out/<video>/`. Verificá con `node_modules/ffmpeg-static/ffmpeg -hide_banner -i <mp4>` (duración, tamaño, 60 fps) y
+Salida en `out/<video>/`. El render verifica el MP4 al final y falla (exit != 0) si no decodifica limpio; no lanzar dos
+renders del mismo video a la vez (`docs/mp4-corrupto.md`). Verificá con `node_modules/ffmpeg-static/ffmpeg -hide_banner -i <mp4>` (duración, tamaño, 60 fps) y
 sacá una hoja de contactos con `-vf "fps=0.4,scale=640:-1,tile=4x3"` para revisar el conjunto. Reportá qué verificaste y qué no:
 mirar stills y una hoja no es haber visto el video reproducido.
 

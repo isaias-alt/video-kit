@@ -22,6 +22,7 @@ npm run vk -- new <nombre> [--duration 30]
 npm run vk -- dev <video> [--vertical]
 npm run vk -- stills <video> --t 1,2.5 [--vertical] [--only id]
 npm run vk -- render <video> [--vertical] [--samples 4] [--scale 2]
+npm run vk -- verify <video> [--vertical]
 npm run typecheck
 ```
 
@@ -30,6 +31,7 @@ npm run typecheck
 - Todo local: bun, vite y ffmpeg salen de `node_modules` (`bun`, `ffmpeg-static`). No instalar nada global.
 - Cada frame es función pura del tiempo. Nada de `Math.random()` ni estado entre frames (usar `hash`/`noise` de `@engine/util`).
 - Los layouts se calculan desde `W` y `H`, nunca con 1920/1080 fijos.
+- Un render por video a la vez (hay un lock). El render verifica el MP4 solo (decodificación completa, yuv420p, brillo); ver `docs/mp4-corrupto.md`.
 - Antes de renderizar completo, mirar stills. Después de renderizar, verificar duración y tamaño con `ffmpeg -i`.
 - No afirmar que se vio un video si solo se vieron stills.
 

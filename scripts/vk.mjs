@@ -5,11 +5,13 @@
 //   npm run vk -- dev <video> [--vertical]
 //   npm run vk -- stills <video> --t 1,2.5 [--vertical] [--only id1,id2]
 //   npm run vk -- render <video> [--vertical] [--samples 4] [--scale 2]
+//   npm run vk -- verify <video> [--vertical]   (full decode + pix_fmt/profile + brightness check of the rendered MP4)
 //   npm run vk -- audio <video>      (videos with audio/beat.ts: regenerate the soundtrack and data/audio.json)
 import { spawnSync } from 'node:child_process';
-import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { createRequire } from 'node:module';
+import { reportVerify } from './verify-mp4.mjs';
 
 const root = path.resolve(import.meta.dirname, '..');
 const require = createRequire(import.meta.url);
@@ -58,8 +60,24 @@ const audio = () => step('bun', [beatScript]);
 
 if (cmd === 'audio') { if (!existsSync(beatScript)) die(`videos/${name} has no audio/beat.ts`); audio(); process.exit(0); }
 if (cmd === 'dev') run('vite', ['--port', vertical ? '5174' : '5173']);
+if (cmd === 'verify') {
+  const files = [`${name}${suffix}.mp4`, `${name}${suffix}.video.mp4`].map((f) => path.join(root, 'out', name, f)).filter(existsSync);
+  if (!files.length) die(`no rendered MP4 for ${name}${suffix} in out/${name}`);
+  process.exit(files.map((f) => reportVerify(env.FFMPEG, f, { size: [+size.VIDEO_W, +size.VIDEO_H], audio: !f.endsWith('.video.mp4') && existsSync(beatScript) })).every(Boolean) ? 0 : 1);
+}
 if (cmd === 'render') {
   mkdirSync(path.join(root, 'out', name), { recursive: true });
+  // one render per video at a time: two ffmpegs writing the same MP4 (or the soundtrack being regenerated under a
+  // muxing one) leave a file with two moov boxes and garbage after the mdat. See docs/mp4-corrupto.md.
+  const lock = path.join(root, 'out', name, '.render.lock');
+  if (existsSync(lock)) {
+    const pid = Number(readFileSync(lock, 'utf8'));
+    let alive = false;
+    try { process.kill(pid, 0); alive = true; } catch (e) { alive = e.code === 'EPERM'; }
+    if (alive) die(`another render of ${name} is running (pid ${pid}, ${path.relative(root, lock)}). Wait for it to finish.`);
+  }
+  writeFileSync(lock, String(process.pid));
+  process.on('exit', () => rmSync(lock, { force: true }));
   const out = `out/${name}/${name}${suffix}.mp4`;
   if (!existsSync(beatScript)) run('bun', ['scripts/render.ts', 'video', '--out', out, ...args]);
   audio();
@@ -67,8 +85,12 @@ if (cmd === 'render') {
   step('bun', ['scripts/render.ts', 'video', '--out', silent, ...args]);
   // the picture is copied as is; the soundtrack is cut to the rendered range, normalised to -14 LUFS (social) and AAC-encoded
   const fi = args.indexOf('--from'), from = fi >= 0 ? args[fi + 1] : '0';
+  const partial = `out/${name}/${name}${suffix}.partial-${process.pid}.mp4`;
+  process.on('exit', () => rmSync(path.join(root, partial), { force: true }));
   step(env.FFMPEG, ['-hide_banner', '-loglevel', 'error', '-y', '-i', silent, '-ss', from, '-i', wav, '-map', '0:v', '-map', '1:a',
-    '-c:v', 'copy', '-af', 'loudnorm=I=-14:TP=-1.5:LRA=11', '-ar', '48000', '-c:a', 'aac', '-b:a', '192k', '-shortest', '-movflags', '+faststart', out]);
+    '-c:v', 'copy', '-af', 'loudnorm=I=-14:TP=-1.5:LRA=11', '-ar', '48000', '-c:a', 'aac', '-b:a', '192k', '-shortest', '-movflags', '+faststart', '-f', 'mp4', partial]);
+  if (!reportVerify(env.FFMPEG, path.join(root, partial), { size: [+size.VIDEO_W, +size.VIDEO_H], audio: true })) die(`the muxed MP4 failed verification, not publishing ${out}`);
+  renameSync(path.join(root, partial), path.join(root, out));
   console.log(`wrote ${out} (picture + soundtrack)`);
   process.exit(0);
 }

@@ -13,9 +13,10 @@
 //            full-res from the pixel buffer, videos are encoded at the physical size.
 // Uses the Vite dev server at --url (default http://localhost:5173); starts a private one if unreachable.
 import { chromium, type Page } from 'playwright-core';
-import { mkdirSync, existsSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, existsSync, rmSync, writeFileSync, renameSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { reportVerify } from './verify-mp4.mjs';
 
 const argv = process.argv.slice(2);
 const mode = argv[0] ?? 'stills';
@@ -54,20 +55,26 @@ async function openPage(url: string) {
     headless: !flag('headed'),
     args: ['--use-angle=metal', '--enable-gpu-rasterization', '--ignore-gpu-blocklist', '--disable-background-timer-throttling', '--disable-renderer-backgrounding', '--disable-backgrounding-occluded-windows'],
   });
-  const page = await browser.newPage({ viewport: { width: VW, height: VH }, deviceScaleFactor: 1 });
-  const logs: string[] = [];
-  page.on('console', (m) => { if (m.type() === 'error' || m.type() === 'warning') logs.push(`[${m.type()}] ${m.text()}`); });
-  page.on('pageerror', (e) => logs.push(`[pageerror] ${e.message}`));
-  const only = opt('only');
-  await page.goto(`${url}/?export=1${only ? `&only=${only}` : ''}${SCALE !== 1 ? `&scale=${SCALE}` : ''}`);
-  await page.waitForFunction(() => (window as any).__pdoom?.ready || (window as any).__pdoom?.error, null, { timeout: 120000 });
-  const err = await page.evaluate(() => (window as any).__pdoom.error);
-  if (err) throw new Error(`app failed to boot:\n${err}\n${logs.join('\n')}`);
-  const size: [number, number] = await page.evaluate(() => [(window as any).__pdoom.width ?? 1920, (window as any).__pdoom.height ?? 1080]);
-  if (size[0] !== OW || size[1] !== OH) throw new Error(`app renders ${size[0]}x${size[1]}, expected ${OW}x${OH} (--scale ${SCALE})`);
-  const sceneErrors: string[] = await page.evaluate(() => (window as any).__pdoom.errors);
-  if (sceneErrors.length) console.error('SCENE ERRORS:\n' + sceneErrors.join('\n'));
-  return { browser, page, logs };
+  try {
+    const page = await browser.newPage({ viewport: { width: VW, height: VH }, deviceScaleFactor: 1 });
+    const logs: string[] = [];
+    page.on('console', (m) => { if (m.type() === 'error' || m.type() === 'warning') logs.push(`[${m.type()}] ${m.text()}`); });
+    page.on('pageerror', (e) => logs.push(`[pageerror] ${e.message}`));
+    const only = opt('only');
+    await page.goto(`${url}/?export=1${only ? `&only=${only}` : ''}${SCALE !== 1 ? `&scale=${SCALE}` : ''}`);
+    await page.waitForFunction(() => (window as any).__pdoom?.ready || (window as any).__pdoom?.error, null, { timeout: 120000 });
+    const err = await page.evaluate(() => (window as any).__pdoom.error);
+    if (err) throw new Error(`app failed to boot:\n${err}\n${logs.join('\n')}`);
+    const size: [number, number] = await page.evaluate(() => [(window as any).__pdoom.width ?? 1920, (window as any).__pdoom.height ?? 1080]);
+    if (size[0] !== OW || size[1] !== OH) throw new Error(`app renders ${size[0]}x${size[1]}, expected ${OW}x${OH} (--scale ${SCALE})`);
+    // a scene that fails to load (missing dependency, syntax error) must stop the render: it would come out as a hole in the video
+    const sceneErrors: string[] = await page.evaluate(() => (window as any).__pdoom.errors);
+    if (sceneErrors.length) throw new Error('SCENE ERRORS (render aborted):\n' + sceneErrors.join('\n'));
+    return { browser, page, logs };
+  } catch (e) {
+    await browser.close().catch(() => {});
+    throw e;
+  }
 }
 
 async function stills(page: Page, times: number[], outDir: string) {
@@ -117,6 +124,9 @@ async function sheet(page: Page, times: number[], cols: number, out: string) {
  */
 async function video(url: string, from: number, to: number, fps: number, out: string) {
   mkdirSync(path.dirname(out), { recursive: true });
+  // ffmpeg writes to a private partial file; only a verified one is renamed to `out`, so a failed, killed or
+  // concurrent render can never leave (or mix into) a half-written MP4 at the final path
+  const partial = out.replace(/\.mp4$/, '') + `.partial-${process.pid}.mp4`;
   const crf = opt('crf', '16')!;
   // (frames come as rgb24: the same YUV out of the scaler as from rgba, a quarter fewer bytes to move)
   const args = [process.env.FFMPEG ?? 'ffmpeg', '-y', '-loglevel', 'error', '-f', 'rawvideo', '-pix_fmt', 'rgb24', '-s', `${OW}x${OH}`, '-r', String(fps), '-i', 'pipe:0'];
@@ -125,7 +135,7 @@ async function video(url: string, from: number, to: number, fps: number, out: st
   // scale tags the matrix and range; primaries and transfer need setparams (the -color_* output flags don't reach the stream).
   args.push('-vf', 'vflip,scale=out_color_matrix=bt709,setparams=color_primaries=bt709:color_trc=bt709:colorspace=bt709', '-c:v', 'libx264', '-preset', opt('preset', 'slow')!, '-crf', crf, '-pix_fmt', 'yuv420p', '-tune', 'grain', '-x264-params', opt('x264', 'aq-mode=3')!);
   args.push('-an');
-  args.push('-movflags', '+faststart', out);
+  args.push('-movflags', '+faststart', '-f', 'mp4', partial);
   const ff = Bun.spawn(args, { stdin: 'pipe', stdout: 'inherit', stderr: 'inherit' });
 
   const f0 = Math.round(from * fps), f1 = Math.round(to * fps), total = f1 - f0;
@@ -139,7 +149,7 @@ async function video(url: string, from: number, to: number, fps: number, out: st
   const spoolCap = Math.floor((+opt('spool-gb', '20')! * 1e9) / frameBytes);
   const spoolDir = path.join(tmpdir(), `pdoom-spool-${process.pid}`);
   mkdirSync(spoolDir, { recursive: true });
-  for (const sig of ['SIGINT', 'SIGTERM'] as const) process.on(sig, () => { ff.kill(9); rmSync(spoolDir, { recursive: true, force: true }); process.exit(130); });
+  for (const sig of ['SIGINT', 'SIGTERM'] as const) process.on(sig, () => { ff.kill(9); rmSync(spoolDir, { recursive: true, force: true }); rmSync(partial, { force: true }); process.exit(130); });
   const spooled = new Set<number>();
   let spoolPeak = 0;
   const spoolFile = (n: number) => path.join(spoolDir, `${n}.rgb`);
@@ -260,11 +270,13 @@ async function video(url: string, from: number, to: number, fps: number, out: st
     ff.stdin.end();
     const code = await ff.exited;
     if (code !== 0) throw new Error(`ffmpeg exited with code ${code}`);
+    console.log(`\nverifying ${path.basename(out)} (full decode)...`);
+    if (!reportVerify(process.env.FFMPEG ?? 'ffmpeg', partial, { frames: total, size: [OW, OH] })) throw new Error(`the rendered MP4 failed verification, not publishing ${out}`);
+    renameSync(partial, out);
     ok = true;
   } finally {
     ending = true;
-    // (killed, ffmpeg leaves an unplayable file rather than a finished-looking truncated one)
-    if (!ok) ff.kill(9);
+    if (!ok) { ff.kill(9); rmSync(partial, { force: true }); }
     await closePages();
     server.stop(true);
     rmSync(spoolDir, { recursive: true, force: true });

@@ -35,5 +35,8 @@
   "include": [
     "src",
     "videos"
+  ],
+  "exclude": [
+    "videos/*/audio"
   ]
 }

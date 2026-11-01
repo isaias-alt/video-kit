@@ -5,6 +5,7 @@
 //   npm run vk -- dev <video> [--vertical]
 //   npm run vk -- stills <video> --t 1,2.5 [--vertical] [--only id1,id2]
 //   npm run vk -- render <video> [--vertical] [--samples 4] [--scale 2]
+//   npm run vk -- audio <video>      (videos with audio/beat.ts: regenerate the beat and data/audio.json)
 import { spawnSync } from 'node:child_process';
 import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
@@ -18,7 +19,10 @@ const args = rest.filter((a) => a !== '--vertical');
 const die = (m) => { console.error(m); process.exit(1); };
 const videos = () => readdirSync(path.join(root, 'videos'), { withFileTypes: true }).filter((d) => d.isDirectory() && !d.name.startsWith('_')).map((d) => d.name);
 
-if (!cmd || cmd === 'help') die(readFileSync(import.meta.filename, 'utf8').split('\n').slice(1, 8).join('\n'));
+if (!cmd || cmd === 'help') {
+  const lines = readFileSync(import.meta.filename, 'utf8').split('\n').slice(1);
+  die(lines.slice(0, lines.findIndex((l) => !l.startsWith('//'))).join('\n'));
+}
 if (cmd === 'list') { console.log(videos().join('\n')); process.exit(0); }
 
 if (cmd === 'new') {
@@ -45,7 +49,28 @@ const env = {
 const suffix = vertical ? '-vertical' : '';
 const run = (c, a) => { const r = spawnSync(c, a, { cwd: root, env, stdio: 'inherit' }); process.exit(r.status ?? 1); };
 
+// Optional soundtrack: a video that has audio/beat.ts generates out/<video>/beat.wav and its data/audio.json
+// (beat grid, onsets) from code; render then muxes the beat into the MP4. See docs/audio.md.
+const beatScript = path.join(root, 'videos', name, 'audio/beat.ts');
+const wav = path.join(root, 'out', name, 'beat.wav');
+const step = (c, a) => { const r = spawnSync(c, a, { cwd: root, env, stdio: 'inherit' }); if (r.status !== 0) process.exit(r.status ?? 1); };
+const audio = () => step('bun', [beatScript]);
+
+if (cmd === 'audio') { if (!existsSync(beatScript)) die(`videos/${name} has no audio/beat.ts`); audio(); process.exit(0); }
 if (cmd === 'dev') run('vite', ['--port', vertical ? '5174' : '5173']);
-if (cmd === 'render') { mkdirSync(path.join(root, 'out', name), { recursive: true }); run('bun', ['scripts/render.ts', 'video', '--out', `out/${name}/${name}${suffix}.mp4`, ...args]); }
+if (cmd === 'render') {
+  mkdirSync(path.join(root, 'out', name), { recursive: true });
+  const out = `out/${name}/${name}${suffix}.mp4`;
+  if (!existsSync(beatScript)) run('bun', ['scripts/render.ts', 'video', '--out', out, ...args]);
+  audio();
+  const silent = `out/${name}/${name}${suffix}.video.mp4`;
+  step('bun', ['scripts/render.ts', 'video', '--out', silent, ...args]);
+  // the picture is copied as is; the beat is cut to the rendered range, normalised to -14 LUFS (social) and AAC-encoded
+  const fi = args.indexOf('--from'), from = fi >= 0 ? args[fi + 1] : '0';
+  step(env.FFMPEG, ['-hide_banner', '-loglevel', 'error', '-y', '-i', silent, '-ss', from, '-i', wav, '-map', '0:v', '-map', '1:a',
+    '-c:v', 'copy', '-af', 'loudnorm=I=-14:TP=-1.5:LRA=11', '-ar', '48000', '-c:a', 'aac', '-b:a', '192k', '-shortest', '-movflags', '+faststart', out]);
+  console.log(`wrote ${out} (picture + beat)`);
+  process.exit(0);
+}
 if (cmd === 'stills') run('bun', ['scripts/render.ts', 'stills', '--out', `out/${name}/wip${suffix}`, ...args]);
 die(`unknown command "${cmd}"`);

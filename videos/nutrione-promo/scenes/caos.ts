@@ -113,7 +113,7 @@ function frag(c: CanvasRenderingContext2D, k: Kind, lt: number) {
 
 export default class Caos extends Plate {
   draw(c: CanvasRenderingContext2D, f: Frame) {
-    const lt = f.lt, su = portrait ? 1.05 : 1, cx = W / 2, cy = portrait ? H * 0.52 : H * 0.5;
+    const lt = f.lt, su = portrait ? 1.05 : 1, cx = W / 2, cy = portrait ? H * 0.52 : H * 0.74;
     const pos = (nx: number, ny: number) => ({ x: portrait ? W * (0.24 + nx * 0.52) : nx * W, y: portrait ? (0.36 + ny * 0.6) * H : ny * H });
     const shake = prog(lt, 10, 13.9, ease.inQuad) * 16;
     c.save();
@@ -124,7 +124,7 @@ export default class Caos extends Plate {
     wash(W * 0.2, H * 0.25, W * 0.5, '#DCFCE7', 0.7); wash(W * 0.85, H * 0.3, W * 0.4, '#DBEAFE', 0.6); wash(W * 0.6, H * 0.85, W * 0.45, '#FEF3C7', 0.6);
 
     // ---- fragments
-    const gather = (t: number) => prog(lt, 6.0 + (hash(t, 21) * 2.2), 13.75, ease.inCubic);
+    const gather = (t: number) => prog(lt, 6.0 + hash(t, 21) * 2.2, 13.75, ease.inCubic);
     for (let i = 0; i < FRAGS.length; i++) {
       const fr = FRAGS[i]!, a = pop(lt, fr.t, 0.4);
       if (a <= 0) continue;
@@ -134,6 +134,8 @@ export default class Caos extends Plate {
       // a beat nudge on everything that is already there
       sc *= 1 + 0.025 * pulse(lt % B, 0, 0.1) * (lt > 1 ? 1 : 0);
       let al = Math.min(1, a * 1.4);
+      // landscape: the whole pile sinks into a lower band (like the tall format has by nature) so the word has clean space above
+      if (!portrait) { const sink = ease.inOutCubic(prog(lt, 5.6, 6.4)); y = lerp(y, 0.56 * H + (y / H) * 0.38 * H, sink); sc *= 1 - 0.18 * sink; }
       const g = gather(i);
       if (g > 0) {
         const dx = x - cx, dy = y - cy, r0 = Math.hypot(dx, dy), a0 = Math.atan2(dy, dx), dir = hash(i, 9) > 0.5 ? 1 : -1;
@@ -174,7 +176,7 @@ export default class Caos extends Plate {
         if (lt < t0 || lt >= t1) continue;
         const u = lt - t0, s = 1 + 0.5 * (1 - ease.outExpo(prog(u, 0, 0.3))), out = i === 3 ? 0 : prog(lt, t1 - 0.2, t1, ease.inCubic);
         c.save(); c.globalAlpha = (1 - out) * prog(u, 0, 0.12);
-        const size = portrait ? 170 : 210, wy = portrait ? H * 0.2 + 70 : H * 0.28;
+        const size = portrait ? 170 : 200, wy = portrait ? H * 0.2 + 70 : H * 0.3;
         c.translate(cx, wy); c.scale(s, s);
         eyebrow(c, i === 3 ? 'Un solo lugar' : 'NutriOne', 0, -size * 0.92, C.logo, portrait ? 20 : 24, 'center');
         hero(c, word, 0, 0, size, i === 3 ? C.logo : C.ink, 'center', 800, C.bg);

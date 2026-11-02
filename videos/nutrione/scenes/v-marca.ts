@@ -1,7 +1,7 @@
 // Vertical 25-30s: the brand lands, stacked and centred.
 import type { Frame } from '@engine/scene';
 import { Plate, W } from './_plate';
-import { C, FONT, TONES, logo, logoWidth, rr, text, type ToneKey } from './_brand';
+import { C, FONT, TONES, logo, logoWidth, rr, text, wordmarkStacked, type ToneKey } from './_brand';
 import { ease, prog } from '@engine/util';
 
 export default class VMarca extends Plate {
@@ -11,7 +11,7 @@ export default class VMarca extends Plate {
     logo(c, cx - logoWidth(LH) / 2, 380, LH, C.logo, prog(lt, 0.2, 1.3, ease.inOutCubic));
     const wA = prog(lt, 0.7, 1.4, ease.outCubic);
     c.save(); c.globalAlpha = wA; c.translate(0, (1 - wA) * 30);
-    text(c, 'NutriOne', cx, 880, FONT.display(150, 700), C.ink, 'center');
+    wordmarkStacked(c, cx, 880, 695);
     c.restore();
 
     const tA = prog(lt, 1.5, 2.2, ease.outCubic);

@@ -1,7 +1,7 @@
 // Vertical 17-25s: template on top, patients below, PDF sheet centred.
 import type { Frame } from '@engine/scene';
 import { Plate, W, H } from './_plate';
-import { C, FONT, TONES, card, rr, text, logo, logoWidth } from './_brand';
+import { C, FONT, TONES, card, rr, text, logo, wordmark } from './_brand';
 import { heading } from './_ui';
 import { ease, prog, lerp } from '@engine/util';
 
@@ -86,7 +86,7 @@ export default class VPlanes extends Plate {
       c.save(); c.globalAlpha = sA;
       card(c, sx, sy, sw, sh, { r: 14, lift: 1.5 });
       logo(c, sx + 56, sy + 56, 76);
-      text(c, 'NutriOne', sx + 56 + logoWidth(76) + 18, sy + 108, FONT.display(40, 700), C.ink);
+      wordmark(c, sx + 56, sy + 56, 76);
       rr(c, sx + sw - 56 - 100, sy + 62, 100, 44, 12); c.fillStyle = TONES.red.bg; c.fill();
       text(c, 'PDF', sx + sw - 56 - 50, sy + 94, FONT.mono(22, 500), TONES.red.text, 'center', 3);
       text(c, 'Plan nutricional', sx + 56, sy + 232, FONT.display(54, 600), C.ink);

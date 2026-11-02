@@ -1,7 +1,7 @@
 // 17-25s: write a plan once, assign it to every patient with a click, export it as PDF.
 import type { Frame } from '@engine/scene';
 import { Plate, W, H } from './_plate';
-import { C, FONT, TONES, card, rr, text, logo, logoWidth } from './_brand';
+import { C, FONT, TONES, card, rr, text, logo, wordmark } from './_brand';
 import { heading } from './_ui';
 import { ease, prog, lerp } from '@engine/util';
 
@@ -96,7 +96,7 @@ export default class Planes extends Plate {
       c.save(); c.globalAlpha = sA; c.translate(sx + 270, sy + 400); c.rotate(-0.025 * (1 - sA) * 6); c.translate(-(sx + 270), -(sy + 400));
       card(c, sx, sy, 540, 780, { r: 12, lift: 1.5 });
       logo(c, sx + 44, sy + 44, 64);
-      text(c, 'NutriOne', sx + 44 + logoWidth(64) + 16, sy + 90, FONT.display(34, 700), C.ink);
+      wordmark(c, sx + 44, sy + 44, 64);
       rr(c, sx + 540 - 44 - 92, sy + 50, 92, 40, 10); c.fillStyle = TONES.red.bg; c.fill();
       text(c, 'PDF', sx + 540 - 44 - 46, sy + 78, FONT.mono(20, 500), TONES.red.text, 'center', 3);
       text(c, 'Plan nutricional', sx + 44, sy + 190, FONT.display(44, 600), C.ink);

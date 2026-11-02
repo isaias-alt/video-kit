@@ -9,7 +9,7 @@ import in500 from '@fontsource/inter/files/inter-latin-500-normal.woff2?url';
 import in600 from '@fontsource/inter/files/inter-latin-600-normal.woff2?url';
 import mo400 from '@fontsource/jetbrains-mono/files/jetbrains-mono-latin-400-normal.woff2?url';
 import mo500 from '@fontsource/jetbrains-mono/files/jetbrains-mono-latin-500-normal.woff2?url';
-import { LOGO_PATHS, LOGO_VB } from './_logo';
+import { LOCKUP_VB, LOGO_PATHS, LOGO_VB, WORDMARK_BOX, WORDMARK_PATHS } from './_logo';
 import { card as kitCard, type CardOptions } from '@kit/draw';
 
 export const C = {
@@ -75,3 +75,31 @@ export function logo(c: CanvasRenderingContext2D, x: number, y: number, h: numbe
   c.restore();
 }
 export const logoWidth = (h: number) => (LOGO_VB.w / LOGO_VB.h) * h;
+
+/** Horizontal lockup width for an isotipo `h` px tall (isotipo + gap + wordmark, as in the design system's logo-nuevo). */
+export const lockupWidth = (h: number) => (LOCKUP_VB.w / LOCKUP_VB.h) * h;
+
+/**
+ * The "NutriOne" wordmark (Sora 700 outlines), laid out as the horizontal lockup: (x, y) is the top-left of an
+ * isotipo `h` px tall, so the wordmark sits to its right at the lockup's gap and vertical alignment.
+ */
+export function wordmark(c: CanvasRenderingContext2D, x: number, y: number, h: number, color: string = C.ink) {
+  const s = h / LOCKUP_VB.h;
+  c.save();
+  c.translate(x, y);
+  c.scale(s, s);
+  c.fillStyle = color;
+  for (const d of WORDMARK_PATHS) c.fill(new Path2D(d));
+  c.restore();
+}
+
+/** The wordmark alone, `w` px wide (ink), centred on `cx` with its capitals sitting on `base`. */
+export function wordmarkStacked(c: CanvasRenderingContext2D, cx: number, base: number, w: number, color: string = C.ink) {
+  const s = w / WORDMARK_BOX.w;
+  c.save();
+  c.translate(cx - w / 2 - WORDMARK_BOX.x * s, base - WORDMARK_BOX.base * s);
+  c.scale(s, s);
+  c.fillStyle = color;
+  for (const d of WORDMARK_PATHS) c.fill(new Path2D(d));
+  c.restore();
+}
